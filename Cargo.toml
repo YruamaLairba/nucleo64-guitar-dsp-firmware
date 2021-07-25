@@ -18,9 +18,9 @@ rtt-target = {version = "0.3.0", features = ["cortex-m"]}
 version = "0.12.1"
 features = ["stm32f411", "rt"]
 
-#[dependencies.stm32f4xx-hal]
-#version = "0.8"
-#features = ["rt", "stm32f411"] # replace the model of your microcontroller here
+[dependencies.stm32f4xx-hal]
+version = "0.8"
+features = ["rt", "stm32f411"] # replace the model of your microcontroller here
 
 # Uncomment for the panic example.
 # panic-itm = "0.4.1"
