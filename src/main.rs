@@ -8,8 +8,8 @@
 use core::panic::PanicInfo;
 use cortex_m_semihosting::debug;
 use rtt_target::{rprintln, rtt_init_print};
-use stm32f4xx_hal::{prelude::*,stm32,spi};
-use spi::{Spi};
+use spi::Spi;
+use stm32f4xx_hal::{prelude::*, spi, stm32};
 //use stm32f4::stm32f411;
 
 //PLLI2S clock configuration
@@ -24,13 +24,13 @@ const ODD: bool = true;
 //generate Master Clock ? Modifying this require to adapt the i2s clock
 const MCK: bool = true;
 
-#[rtic::app(device = stm32f4::stm32f411, peripherals = true)]
+#[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
     #[init]
-    fn init(_: init::Context) {
+    fn init(cx: init::Context) {
         rtt_init_print!();
         rprintln!("init");
-        let device = stm32::Peripherals::take().unwrap();
+        let device = cx.device;
         let gpioa = device.GPIOA.split();
         let gpiob = device.GPIOB.split();
         let gpioc = device.GPIOC.split();
@@ -87,17 +87,17 @@ const APP: () = {
         // 4:0 LINVOL, 10111 = 0db
         // 7 LINMUTE, 1 = mute
         // 8 LRINBOTH, 1 = apply VOL and MUTE to L & R channel
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0000_1,0b00010111];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_0000_1, 0b00010111];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
         //Left Headphone Out
         // 6:0 HPVOL,1111001= 0db,0110000 = -73dB, 0000000 to 0101111 = MUTE
         // 7 LZCEN, enable zero cross detection
-        // 8 LRHPBOTH, 
+        // 8 LRHPBOTH,
         #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0010_1,0b01111001-12];
+        let spi_buf = [0b000_0010_1, 0b01111001 - 12];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
@@ -110,8 +110,8 @@ const APP: () = {
         // 4 DACSEL: connect DAC to Line Out
         // 5 SIDETONE: connect mic to line out
         // 7:6 SIDEATT: side tone attenuation (see p51)
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0100_0,0b0001_0010];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_0100_0, 0b0001_0010];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
@@ -121,8 +121,8 @@ const APP: () = {
         // 3 DACMU: dac soft mute
         //
         // 4 HPOR: Store dc offset when High Pass Filter disabled (p52)
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0101_0,0b0000_0000];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_0101_0, 0b0000_0000];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
@@ -136,21 +136,21 @@ const APP: () = {
         // 5 OSCPD
         // 6 CLKOUTPD
         // 7 POWEROFF : enable power off mode
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0110_0,0b0110_0010];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_0110_0, 0b0110_0010];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
         //Digital Audio Interface Format
         // 1:0 FORMAT (see p53) , I2S = 10
         // 3:2 IWL: Input audio data bit length, 32bits = 11
-        // 
+        //
         // 4 LRP: DACLRC phase control, to check later, default=0
         // 5 LRSWAP: DAC Left Right Clock Swap ? default=0
         // 6 MS: Master/Slave control: Slave=0
         // 7 BCLKINV: invert bit clock: Don't invert=0(default)
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0111_0,0b0000_1110];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_0111_0, 0b0000_1110];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
@@ -159,15 +159,15 @@ const APP: () = {
         // 1 BOSR: base oversampling 0=256fs for Normal
         // 5:2 SR: ADc and DAC sampling rate (p42-45)
         // 6 CLKDIV2: divide core clock by 2 (0= core clock = MCLK)
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_1000_0,0b0000_0000];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_1000_0, 0b0000_0000];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
         //Active Control
         //0 ACTIVE : 1 activate. The interface should be disabled when changing conf
-    #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_1001_0,0b0000_0001];
+        #[allow(clippy::unusual_byte_groupings)]
+        let spi_buf = [0b000_1001_0, 0b0000_0001];
         let _ = pb2.set_low();
         spi1.write(&spi_buf).unwrap();
         let _ = pb2.set_high();
@@ -178,11 +178,11 @@ const APP: () = {
         let _pb14 = gpiob.pb14.into_alternate_af6(); //ext_SD
         let _pb12 = gpiob.pb12.into_alternate_af5(); //WS
         let _pc6 = gpioc.pc6.into_alternate_af5(); //MCK
-        //Setup an interrupt that can be triggered by pb12 pin
-        //Note: The hal doesn't allow to manipulate interrupt for pin in aternate mode
+                                                   //Setup an interrupt that can be triggered by pb12 pin
+                                                   //Note: The hal doesn't allow to manipulate interrupt for pin in aternate mode
         unsafe {
             let syscfg = &(*stm32::SYSCFG::ptr());
-            //interrupt on pb12
+            //i on pb12
             syscfg.exticr4.modify(|_, w| w.exti12().bits(0b0001));
             let exti = &(*stm32::EXTI::ptr());
             //mask EXTI0 interrupt
@@ -252,6 +252,7 @@ const APP: () = {
                 w.i2se().enabled()
             })
         }
+        rprintln!("init done");
     }
 
     #[idle]
