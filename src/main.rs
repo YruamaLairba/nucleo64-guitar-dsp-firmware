@@ -268,6 +268,117 @@ const APP: () = {
 
         loop {}
     }
+    #[task(binds = SPI2)]
+    fn spi2(_: spi2::Context) {
+        use stm32f4xx_hal::stm32::spi1::sr::CHSIDE_A;
+        static mut PREVIOUS_RX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
+        static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
+        static mut RX_DATA: [u16; 4] = [0; 4];
+        static mut TX_DATA: [u16; 4] = [0; 4];
+        static mut SAMPLE: (u32,u32)=(0,0); 
+        unsafe {
+            let spi2 = &(*stm32::SPI2::ptr());
+            if spi2.sr.read().fre().bit() {
+                rprintln!("Frame Error");
+            }
+            if spi2.sr.read().ovr().bit() {
+                rprintln!("Overrun");
+                //this sequence reset the interrupt
+                let _ = spi2.dr.read().bits();
+                let _ = spi2.sr.read().bits();
+            }
+            if spi2.sr.read().udr().bit() {
+                rprintln!("underrun");
+                //clear the interrupt
+                let _ = spi2.sr.read().bits();
+            }
+            if spi2.sr.read().rxne().bit() {
+                let data = spi2.dr.read().dr().bits();
+                let side = spi2.sr.read().chside().variant();
+                if PREVIOUS_RX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::LEFT {
+                    //left msb
+                    RX_DATA[0] = data;
+                } else if PREVIOUS_RX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::LEFT {
+                    //left lsb
+                    RX_DATA[1] = data;
+                } else if PREVIOUS_RX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::RIGHT {
+                    //right msb
+                    RX_DATA[2] = data;
+                } else if PREVIOUS_RX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
+                    //right lsb
+                    RX_DATA[3] = data;
+                    let left = (RX_DATA[0] as u32) << 16 | (RX_DATA[1] as u32);
+                    let right = (RX_DATA[2] as u32) << 16 | (RX_DATA[3] as u32);
+                    SAMPLE = (left, right);
+                    //rprintln!(
+                    //    "RX: {:016b} {:016b} {:016b} {:016b}",
+                    //    RX_DATA[0],
+                    //    RX_DATA[1],
+                    //    RX_DATA[2],
+                    //    RX_DATA[3]
+                    //);
+                }
+
+                PREVIOUS_RX_SIDE = side;
+                //rprintln!("{:b}", data);
+            }
+
+            let i2s2ext = &(*stm32::I2S2EXT::ptr());
+            if i2s2ext.sr.read().fre().bit() {
+                rprintln!("ext Frame Error");
+                //resynchronization
+                i2s2ext.i2scfgr.modify(|_, w| w.i2se().disabled());
+                let gpiob = &(*stm32::GPIOB::ptr());
+                let ws = gpiob.idr.read().idr12().bit();
+                if ws {
+                    i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+                    rprintln!("Resynced (I2S2EXT)");
+                } else {
+                    let exti = &(*stm32::EXTI::ptr());
+                    exti.imr.modify(|_, w| w.mr12().set_bit());
+                }
+            }
+            if i2s2ext.sr.read().ovr().bit() {
+                rprintln!("ext Overrun");
+                //this sequence reset the interrupt
+                let _ = i2s2ext.dr.read().bits();
+                let _ = i2s2ext.sr.read().bits();
+            }
+            if i2s2ext.sr.read().udr().bit() {
+                rprintln!("ext underrun");
+                //clear the interrupt
+                let _ = i2s2ext.sr.read().bits();
+                i2s2ext.i2scfgr.modify(|_, w| w.i2se().disabled());
+                i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+            }
+            if i2s2ext.sr.read().txe().bit() {
+                //let _data = i2s2ext.dr.read().dr().bits();
+                let side = i2s2ext.sr.read().chside().variant();
+                if PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::LEFT {
+                    //left msb
+                    i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[0]));
+                } else if PREVIOUS_TX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::LEFT {
+                    //left lsb
+                    i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[1]));
+                } else if PREVIOUS_TX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::RIGHT {
+                    //right msb
+                    i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[2]));
+                } else if PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
+                    //right lsb, end of audio frame
+                    i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[3]));
+                    TX_DATA[0] = (SAMPLE.0 >> 16) as u16;
+                    TX_DATA[1] = SAMPLE.0 as u16;
+                    TX_DATA[2] = (SAMPLE.1 >> 16) as u16;
+                    TX_DATA[3] = SAMPLE.1 as u16;
+                } else {
+                    unreachable!()
+                };
+
+                PREVIOUS_TX_SIDE = side;
+            }
+        }
+    }
+
 };
 
 #[inline(never)]
