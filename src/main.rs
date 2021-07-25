@@ -275,7 +275,7 @@ const APP: () = {
         static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut RX_DATA: [u16; 4] = [0; 4];
         static mut TX_DATA: [u16; 4] = [0; 4];
-        static mut SAMPLE: (u32,u32)=(0,0); 
+        static mut SAMPLE: (u32, u32) = (0, 0);
         unsafe {
             let spi2 = &(*stm32::SPI2::ptr());
             if spi2.sr.read().fre().bit() {
@@ -378,7 +378,24 @@ const APP: () = {
             }
         }
     }
-
+    #[task(binds = EXTI15_10)]
+    fn exti15_10(_: exti15_10::Context) {
+        unsafe {
+            let gpiob = &(*stm32::GPIOB::ptr());
+            let ws = gpiob.idr.read().idr12().bit();
+            let exti = &(*stm32::EXTI::ptr());
+            //erase the event
+            exti.pr.modify(|_, w| w.pr12().set_bit());
+            //look if ws/pb1 is high
+            if ws {
+                //disable interrupt on EXTI12
+                exti.imr.modify(|_, w| w.mr12().clear_bit());
+                let i2s2ext = &(*stm32::I2S2EXT::ptr());
+                i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+                rprintln!("Resynced (EXTI0)");
+            }
+        }
+    }
 };
 
 #[inline(never)]
