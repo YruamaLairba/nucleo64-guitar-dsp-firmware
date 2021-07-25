@@ -178,8 +178,9 @@ const APP: () = {
         let _pb14 = gpiob.pb14.into_alternate_af6(); //ext_SD
         let _pb12 = gpiob.pb12.into_alternate_af5(); //WS
         let _pc6 = gpioc.pc6.into_alternate_af5(); //MCK
-                                                   //Setup an interrupt that can be triggered by pb12 pin
-                                                   //Note: The hal doesn't allow to manipulate interrupt for pin in aternate mode
+
+        //Setup an interrupt that can be triggered by pb12 pin
+        //Note: The hal doesn't allow to manipulate interrupt for pin in aternate mode
         unsafe {
             let syscfg = &(*stm32::SYSCFG::ptr());
             //i on pb12
@@ -189,8 +190,6 @@ const APP: () = {
             exti.imr.modify(|_, w| w.mr12().set_bit());
             //trigger interrupt on rising edge
             exti.rtsr.modify(|_, w| w.tr12().set_bit());
-            //unmask EXTI0 interrupt
-            stm32::NVIC::unmask(stm32::Interrupt::EXTI15_10);
         };
         //i2s2 interrupt
         unsafe {
@@ -209,10 +208,6 @@ const APP: () = {
                 w.rxneie().clear_bit();
                 w.errie().set_bit()
             });
-        }
-        //i2s2 interrupt in NVIC
-        unsafe {
-            stm32::NVIC::unmask(stm32::Interrupt::SPI2);
         }
         //setup spi2 peripheral into i2s mode
         unsafe {
@@ -263,8 +258,6 @@ const APP: () = {
         let _x: &'static mut u32 = X;
 
         rprintln!("idle");
-
-        debug::exit(debug::EXIT_SUCCESS);
 
         loop {}
     }
