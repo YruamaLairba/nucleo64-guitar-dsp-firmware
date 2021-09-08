@@ -10,6 +10,10 @@ use cortex_m_semihosting::debug;
 use rtt_target::{rprintln, rtt_init_print};
 use spi::Spi;
 use stm32f4xx_hal::{prelude::*, spi, stm32};
+
+use wm8731_alt::prelude::*;
+use wm8731_alt::Wm8731;
+use wm8731_alt::interface::Frame;
 //use stm32f4::stm32f411;
 
 //PLLI2S clock configuration
@@ -63,6 +67,7 @@ const APP: () = {
             //wait a stable clock
             while rcc.cr.read().plli2srdy().bit_is_clear() {}
         }
+
         //Setup Spi1
         let pa5 = gpioa.pa5.into_alternate_af5(); //CK
         let pa7 = gpioa.pa7.into_alternate_af5(); //MOSI
@@ -74,103 +79,89 @@ const APP: () = {
             phase: spi::Phase::CaptureOnSecondTransition, //With IdleHigh, capture on rising edge
         };
 
-        let mut spi1 = Spi::spi1(
+        let spi1 = Spi::spi1(
             device.SPI1,
             (pa5, spi::NoMiso, pa7),
             spi1_mode,
             1.mhz().into(),
             clocks,
         );
-        //Setup wm8731 chip
-        //
-        //Left Line in
-        // 4:0 LINVOL, 10111 = 0db
-        // 7 LINMUTE, 1 = mute
-        // 8 LRINBOTH, 1 = apply VOL and MUTE to L & R channel
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0000_1, 0b00010111];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Left Headphone Out
-        // 6:0 HPVOL,1111001= 0db,0110000 = -73dB, 0000000 to 0101111 = MUTE
-        // 7 LZCEN, enable zero cross detection
-        // 8 LRHPBOTH,
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0010_1, 0b01111001 - 12];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Analogue Audio Path Control:
-        // 0 mic boost disabled: 0
-        // 1 mic muted: 1
-        // 2 INSEL : 0 = Line input to ADC, 1 = microphone to ADC
-        // 3 BYPASS: connect Line IN to Line Out
-        //
-        // 4 DACSEL: connect DAC to Line Out
-        // 5 SIDETONE: connect mic to line out
-        // 7:6 SIDEATT: side tone attenuation (see p51)
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0100_0, 0b0001_0010];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Digital Audi Path Control
-        // 0 ADCHPD: ADC high pass enable
-        // 2:1 DEEMP: de-emphasis control (see p52)
-        // 3 DACMU: dac soft mute
-        //
-        // 4 HPOR: Store dc offset when High Pass Filter disabled (p52)
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0101_0, 0b0000_0000];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Power down control : 1 = power down, 0 = power up
-        // 0 LINEPD
-        // 1 MICPD
-        // 2 ADCPD
-        // 3 DACPD
-        //
-        // 4 OUTPD
-        // 5 OSCPD
-        // 6 CLKOUTPD
-        // 7 POWEROFF : enable power off mode
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0110_0, 0b0110_0010];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Digital Audio Interface Format
-        // 1:0 FORMAT (see p53) , I2S = 10
-        // 3:2 IWL: Input audio data bit length, 32bits = 11
-        //
-        // 4 LRP: DACLRC phase control, to check later, default=0
-        // 5 LRSWAP: DAC Left Right Clock Swap ? default=0
-        // 6 MS: Master/Slave control: Slave=0
-        // 7 BCLKINV: invert bit clock: Don't invert=0(default)
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_0111_0, 0b0000_1110];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
-        //Sampling Control
-        // 0 USB/NORMAL : 0 = Normal
-        // 1 BOSR: base oversampling 0=256fs for Normal
-        // 5:2 SR: ADc and DAC sampling rate (p42-45)
-        // 6 CLKDIV2: divide core clock by 2 (0= core clock = MCLK)
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_1000_0, 0b0000_0000];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
+        let mut wm8731 = Wm8731::new(SPIInterfaceU8::new(spi1, pb2));
+        //line input: unmute, apply setup for both channel, set volume to 0dB.
+        let lli = left_line_in()
+            .inmute()
+            .clear_bit()
+            .inboth()
+            .set_bit()
+            .invol()
+            .db(InVoldB::P0DB)
+            .into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(lli)));
+        wm8731.send(lli);
+        //headphone out: volume -12 dB, no zero cross detection, apply setup to both channel
+        let lho = left_headphone_out()
+            .hpvol()
+            .db(HpVoldB::N12DB)
+            .zcen()
+            .clear_bit()
+            .hpboth()
+            .set_bit()
+            .into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(lho)));
+        wm8731.send(lho);
+        //analogue audio path control
+        let mut aap = analogue_audio_path();
+        aap = aap.micboost().disable();
+        aap = aap.mutemic().enable();
+        aap = aap.insel().line();
+        aap = aap.bypass().disable();
+        aap = aap.dacsel().select();
+        aap = aap.sidetone().disable();
+        let aap = aap.into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(aap)));
+        wm8731.send(aap);
+        //digital audio path control default adchp hpor ans deemp are ok
+        let mut dap = digital_audio_path();
+        dap = dap.dacmu().disable();
+        let dap = dap.into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(dap)));
+        wm8731.send(dap);
+        //power down: by default all is power down, ie all field are set to 1
+        let mut pd = power_down();
+        pd = pd.lineinpd().clear_bit();
+        pd = pd.adcpd().clear_bit();
+        pd = pd.dacpd().clear_bit();
+        pd = pd.outpd().clear_bit();
+        pd = pd.oscpd().set_bit();
+        pd = pd.clkoutpd().set_bit();
+        pd = pd.poweroff().clear_bit();
+        let pd = pd.into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(pd)));
+        wm8731.send(pd);
+        //digital audi interface
+        let mut dai = digital_audio_interface();
+        dai = dai.format().i2s();
+        dai = dai.iwl().iwl_32_bits();
+        dai = dai.lrp().clear_bit();
+        dai = dai.lrswap().disable();
+        dai = dai.ms().slave();
+        dai = dai.bclkinv().disable();
+        let dai = dai.into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(dai)));
+        wm8731.send(dai);
+
+        //Sampling control: use the raw method
+        let s = sampling();
+        let s = s.usb_normal().normal();
+        let s = s.bosr().clear_bit(); //for 256 fs
+        let s = s.sr().sr_0b0000();
+        let s = s.into_command();
+        rprintln!("{:016b}", u16::from(Frame::from(s)));
+        wm8731.send(s);
+
         //Active Control
-        //0 ACTIVE : 1 activate. The interface should be disabled when changing conf
-        #[allow(clippy::unusual_byte_groupings)]
-        let spi_buf = [0b000_1001_0, 0b0000_0001];
-        let _ = pb2.set_low();
-        spi1.write(&spi_buf).unwrap();
-        let _ = pb2.set_high();
+        wm8731.send(active_control().active().into_command());
+
         //Setup i2s2 and i2s2_ext
         //gpio
         let _pb13 = gpiob.pb13.into_alternate_af5(); //CK
