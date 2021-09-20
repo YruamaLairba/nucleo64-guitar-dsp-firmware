@@ -38,6 +38,6 @@ features = ["rt", "stm32f411"] # replace the model of your microcontroller here
 
 # this lets you use `cargo fix`!
 [[bin]]
-name = "nucleo64-guitar-dsp"
+name = "nucleo64-guitar-dsp-firmware"
 test = false
 bench = false
