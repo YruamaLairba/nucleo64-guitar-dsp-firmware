@@ -6,14 +6,12 @@
 #![no_std]
 
 use core::panic::PanicInfo;
-use cortex_m_semihosting::debug;
 use rtt_target::{rprintln, rtt_init_print};
 use spi::Spi;
 use stm32f4xx_hal::{prelude::*, spi, stm32};
 
 use wm8731_alt::prelude::*;
 use wm8731_alt::Wm8731;
-use wm8731_alt::interface::Frame;
 //use stm32f4::stm32f411;
 
 //PLLI2S clock configuration
@@ -96,7 +94,7 @@ const APP: () = {
             .invol()
             .db(InVoldB::P0DB)
             .into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(lli)));
+        //rprintln!("{:016b}", u16::from(Frame::from(lli)));
         wm8731.send(lli);
         //headphone out: volume -12 dB, no zero cross detection, apply setup to both channel
         let lho = left_headphone_out()
@@ -107,7 +105,7 @@ const APP: () = {
             .hpboth()
             .set_bit()
             .into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(lho)));
+        //rprintln!("{:016b}", u16::from(Frame::from(lho)));
         wm8731.send(lho);
         //analogue audio path control
         let mut aap = analogue_audio_path();
@@ -118,26 +116,25 @@ const APP: () = {
         aap = aap.dacsel().select();
         aap = aap.sidetone().disable();
         let aap = aap.into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(aap)));
+        //rprintln!("{:016b}", u16::from(Frame::from(aap)));
         wm8731.send(aap);
         //digital audio path control default adchp hpor ans deemp are ok
         let mut dap = digital_audio_path();
         dap = dap.dacmu().disable();
         let dap = dap.into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(dap)));
+        //rprintln!("{:016b}", u16::from(Frame::from(dap)));
         wm8731.send(dap);
         //power down: by default all is power down, ie all field are set to 1
         let mut pd = power_down();
         pd = pd.lineinpd().clear_bit();
         pd = pd.adcpd().clear_bit();
         pd = pd.dacpd().clear_bit();
-        pd = pd.outpd().clear_bit();
+        pd = pd.outpd().set_bit();
         pd = pd.oscpd().set_bit();
         pd = pd.clkoutpd().set_bit();
         pd = pd.poweroff().clear_bit();
-        let pd = pd.into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(pd)));
-        wm8731.send(pd);
+        //rprintln!("{:016b}", u16::from(Frame::from(pd)));
+        wm8731.send(pd.into_command());
         //digital audi interface
         let mut dai = digital_audio_interface();
         dai = dai.format().i2s();
@@ -147,7 +144,7 @@ const APP: () = {
         dai = dai.ms().slave();
         dai = dai.bclkinv().disable();
         let dai = dai.into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(dai)));
+        //rprintln!("{:016b}", u16::from(Frame::from(dai)));
         wm8731.send(dai);
 
         //Sampling control: use the raw method
@@ -156,11 +153,8 @@ const APP: () = {
         let s = s.bosr().clear_bit(); //for 256 fs
         let s = s.sr().sr_0b0000();
         let s = s.into_command();
-        rprintln!("{:016b}", u16::from(Frame::from(s)));
+        //rprintln!("{:016b}", u16::from(Frame::from(s)));
         wm8731.send(s);
-
-        //Active Control
-        wm8731.send(active_control().active().into_command());
 
         //Setup i2s2 and i2s2_ext
         //gpio
@@ -216,7 +210,7 @@ const APP: () = {
                 w.ckpol().idle_high(); //
                 w.datlen().twenty_four_bit(); //
                 w.chlen().thirty_two_bit(); //
-                w.i2se().enabled()
+                w.i2se().disabled()
             })
         }
         //setup i2s2ext peripheral
@@ -238,6 +232,15 @@ const APP: () = {
                 w.i2se().enabled()
             })
         }
+        //Active Control
+        wm8731.send(active_control().active().into_command());
+        //run i2s
+        unsafe {
+            let spi2 = &(*stm32::SPI2::ptr());
+            spi2.i2scfgr.modify(|_, w| w.i2se().enabled())
+        }
+        pd = pd.outpd().clear_bit();
+        wm8731.send(pd.into_command());
         rprintln!("init done");
     }
 
@@ -250,7 +253,9 @@ const APP: () = {
 
         rprintln!("idle");
 
-        loop {}
+        loop {
+            cortex_m::asm::nop();
+        }
     }
     #[task(binds = SPI2)]
     fn spi2(_: spi2::Context) {
