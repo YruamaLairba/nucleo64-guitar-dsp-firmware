@@ -6,7 +6,7 @@
 [subrepo]
 	remote = https://github.com/YruamaLairba/wm8731-alt.git
 	branch = main
-	commit = 7ee7154517f34c9cb8e5d3905850fbc7294f7805
-	parent = cbf1c803050cd506e74919af4666fc0ccc9a715e
+	commit = ef8c9173453a99ef9e3e9e78b9e5f21df424bd1a
+	parent = e363912e7b9af8625f11ffeef99e1c766033b1a0
 	method = merge
 	cmdver = 0.4.3
