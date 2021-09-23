@@ -6,10 +6,10 @@
 #![no_std]
 
 use core::panic::PanicInfo;
+use nucleo64_guitar_dsp_firmware::*;
 use rtt_target::{rprintln, rtt_init_print};
 use spi::Spi;
 use stm32f4xx_hal::{prelude::*, spi, stm32};
-
 use wm8731_alt::prelude::*;
 use wm8731_alt::Wm8731;
 //use stm32f4::stm32f411;
@@ -28,8 +28,11 @@ const MCK: bool = true;
 
 #[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
+    struct Resources {
+        dma_buf: Buffer,
+    }
     #[init]
-    fn init(cx: init::Context) {
+    fn init(cx: init::Context) -> init::LateResources {
         rtt_init_print!();
         rprintln!("init");
         let device = cx.device;
@@ -242,6 +245,9 @@ const APP: () = {
         pd = pd.outpd().clear_bit();
         wm8731.send(pd.into_command());
         rprintln!("init done");
+        init::LateResources {
+            dma_buf: Buffer::new(),
+        }
     }
 
     #[idle]
