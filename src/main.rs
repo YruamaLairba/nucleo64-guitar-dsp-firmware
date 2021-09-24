@@ -33,6 +33,7 @@ const APP: () = {
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
+        let dma_buf = Buffer::new();
         rtt_init_print!();
         rprintln!("init");
         let device = cx.device;
@@ -245,9 +246,7 @@ const APP: () = {
         pd = pd.outpd().clear_bit();
         wm8731.send(pd.into_command());
         rprintln!("init done");
-        init::LateResources {
-            dma_buf: Buffer::new(),
-        }
+        init::LateResources { dma_buf }
     }
 
     #[idle]
