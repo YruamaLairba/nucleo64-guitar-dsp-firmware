@@ -8,10 +8,19 @@
 use core::panic::PanicInfo;
 use nucleo64_guitar_dsp_firmware::*;
 use rtt_target::{rprintln, rtt_init_print};
-use spi::Spi;
+use stm32f4xx_hal::gpio::gpioa::PA5;
+use stm32f4xx_hal::gpio::gpioa::PA7;
+use stm32f4xx_hal::gpio::gpiob::PB2;
+use stm32f4xx_hal::gpio::Alternate;
+use stm32f4xx_hal::gpio::Output;
+use stm32f4xx_hal::gpio::PushPull;
+use stm32f4xx_hal::gpio::AF5;
+use stm32f4xx_hal::spi::NoMiso;
+use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::stm32::spi1::sr::CHSIDE_A;
-use stm32f4xx_hal::stm32::{EXTI, I2S2EXT, SPI2};
+use stm32f4xx_hal::stm32::{EXTI, I2S2EXT, SPI1, SPI2};
 use stm32f4xx_hal::{prelude::*, spi, stm32};
+use wm8731_alt::interface::SPIInterfaceU8;
 use wm8731_alt::prelude::*;
 use wm8731_alt::Wm8731;
 //use stm32f4::stm32f411;
@@ -28,12 +37,20 @@ const ODD: bool = true;
 //generate Master Clock ? Modifying this require to adapt the i2s clock
 const MCK: bool = true;
 
+type MyWm8731 = Wm8731<
+    SPIInterfaceU8<
+        Spi<SPI1, (PA5<Alternate<AF5>>, NoMiso, PA7<Alternate<AF5>>)>,
+        PB2<Output<PushPull>>,
+    >,
+>;
+
 #[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
         spi2: SPI2,
         i2s2ext: I2S2EXT,
         exti: EXTI,
+        wm8731: MyWm8731,
         dma_buf: Buffer,
     }
     #[init]
@@ -241,6 +258,7 @@ const APP: () = {
             exti,
             i2s2ext,
             spi2,
+            wm8731,
         }
     }
 
@@ -258,7 +276,7 @@ const APP: () = {
         }
     }
 
-    #[task(binds = SPI2, resources = [spi2,i2s2ext,exti])]
+    #[task(binds = SPI2, resources = [spi2,i2s2ext,exti,wm8731])]
     fn spi2(cx: spi2::Context) {
         static mut PREVIOUS_RX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
