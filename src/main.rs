@@ -49,22 +49,20 @@ const APP: () = {
             .pclk1(50.mhz())
             .pclk2(100.mhz())
             .freeze();
-        //enable system clock for APB1 bus and SPI2 (I2S2)
-        unsafe {
-            let rcc = &(*stm32::RCC::ptr());
-            rcc.apb1enr
-                .modify(|_, w| w.pwren().set_bit().spi2en().set_bit());
-        }
+
         //setup  and startup PLLI2S clock
         unsafe {
             let rcc = &(*stm32::RCC::ptr());
+            //enable system clock for APB1 bus and SPI2 (I2S2)
+            rcc.apb1enr
+                .modify(|_, w| w.pwren().set_bit().spi2en().set_bit());
             //setup
             rcc.plli2scfgr.modify(|_, w| {
                 w.plli2sr().bits(PLLI2SR);
                 w.plli2sn().bits(PLLI2SN);
                 w.plli2sm().bits(PLLI2SM)
             });
-            //run the clock
+            //run the clock, doesn't work if done before freezing clock
             rcc.cr.modify(|_, w| w.plli2son().set_bit());
             //wait a stable clock
             while rcc.cr.read().plli2srdy().bit_is_clear() {}
@@ -170,79 +168,66 @@ const APP: () = {
 
         //Setup an interrupt that can be triggered by pb12 pin
         //Note: The hal doesn't allow to manipulate interrupt for pin in aternate mode
-        unsafe {
-            let syscfg = &(*stm32::SYSCFG::ptr());
-            //i on pb12
-            syscfg.exticr4.modify(|_, w| w.exti12().bits(0b0001));
-            let exti = &(*stm32::EXTI::ptr());
-            //mask EXTI0 interrupt
-            exti.imr.modify(|_, w| w.mr12().set_bit());
-            //trigger interrupt on rising edge
-            exti.rtsr.modify(|_, w| w.tr12().set_bit());
-        };
+        let syscfg = device.SYSCFG;
+        let exti = device.EXTI;
+        //i on pb12
+        syscfg
+            .exticr4
+            .modify(|_, w| unsafe { w.exti12().bits(0b0001) });
+        //mask EXTI0 interrupt
+        exti.imr.modify(|_, w| w.mr12().set_bit());
+        //trigger interrupt on rising edge
+        exti.rtsr.modify(|_, w| w.tr12().set_bit());
         //i2s2 interrupt
-        unsafe {
-            let spi2 = &(*stm32::SPI2::ptr());
-            spi2.cr2.modify(|_, w| {
-                w.txeie().clear_bit();
-                w.rxneie().set_bit();
-                w.errie().set_bit()
-            });
-        }
+        let spi2 = device.SPI2;
+        spi2.cr2.modify(|_, w| {
+            w.txeie().clear_bit();
+            w.rxneie().set_bit();
+            w.errie().set_bit()
+        });
         //i2s2_ext interrupt
-        unsafe {
-            let i2s2ext = &(*stm32::I2S2EXT::ptr());
-            i2s2ext.cr2.modify(|_, w| {
-                w.txeie().set_bit();
-                w.rxneie().clear_bit();
-                w.errie().set_bit()
-            });
-        }
+        let i2s2ext = device.I2S2EXT;
+        i2s2ext.cr2.modify(|_, w| {
+            w.txeie().set_bit();
+            w.rxneie().clear_bit();
+            w.errie().set_bit()
+        });
         //setup spi2 peripheral into i2s mode
-        unsafe {
-            let spi2 = &(*stm32::SPI2::ptr());
-            spi2.i2spr.modify(|_, w| {
-                w.i2sdiv().bits(I2SDIV);
-                w.odd().bit(ODD);
-                w.mckoe().bit(MCK)
-            });
-            spi2.i2scfgr.modify(|_, w| {
-                w.i2smod().i2smode(); //
-                w.i2scfg().master_rx(); //
-                w.pcmsync().long(); //
-                w.i2sstd().philips(); //
-                w.ckpol().idle_high(); //
-                w.datlen().twenty_four_bit(); //
-                w.chlen().thirty_two_bit(); //
-                w.i2se().disabled()
-            })
-        }
+        spi2.i2spr.modify(|_, w| {
+            unsafe { w.i2sdiv().bits(I2SDIV) };
+            w.odd().bit(ODD);
+            w.mckoe().bit(MCK)
+        });
+        spi2.i2scfgr.modify(|_, w| {
+            w.i2smod().i2smode(); //
+            w.i2scfg().master_rx(); //
+            w.pcmsync().long(); //
+            w.i2sstd().philips(); //
+            w.ckpol().idle_high(); //
+            w.datlen().twenty_four_bit(); //
+            w.chlen().thirty_two_bit(); //
+            w.i2se().disabled()
+        });
         //setup i2s2ext peripheral
-        unsafe {
-            let i2s2ext = &(*stm32::I2S2EXT::ptr());
-            i2s2ext.i2spr.modify(|_, w| {
-                w.i2sdiv().bits(I2SDIV);
-                w.odd().bit(ODD);
-                w.mckoe().bit(MCK)
-            });
-            i2s2ext.i2scfgr.modify(|_, w| {
-                w.i2smod().i2smode(); //
-                w.i2scfg().slave_tx(); //
-                w.pcmsync().long(); //
-                w.i2sstd().philips(); //
-                w.ckpol().idle_high(); //
-                w.datlen().twenty_four_bit(); //
-                w.chlen().thirty_two_bit(); //
-                w.i2se().enabled()
-            })
-        }
+        i2s2ext.i2spr.modify(|_, w| {
+            unsafe { w.i2sdiv().bits(I2SDIV) };
+            w.odd().bit(ODD);
+            w.mckoe().bit(MCK)
+        });
+        i2s2ext.i2scfgr.modify(|_, w| {
+            w.i2smod().i2smode(); //
+            w.i2scfg().slave_tx(); //
+            w.pcmsync().long(); //
+            w.i2sstd().philips(); //
+            w.ckpol().idle_high(); //
+            w.datlen().twenty_four_bit(); //
+            w.chlen().thirty_two_bit(); //
+            w.i2se().enabled()
+        });
         //Active Control
         wm8731.send(active_control().active().into_command());
         //run i2s
-        unsafe {
-            let spi2 = &(*stm32::SPI2::ptr());
-            spi2.i2scfgr.modify(|_, w| w.i2se().enabled())
-        }
+        spi2.i2scfgr.modify(|_, w| w.i2se().enabled());
         pd = pd.outpd().clear_bit();
         wm8731.send(pd.into_command());
         rprintln!("init done");
