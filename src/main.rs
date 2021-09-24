@@ -369,22 +369,22 @@ const APP: () = {
             *PREVIOUS_TX_SIDE = side;
         }
     }
-    #[task(binds = EXTI15_10)]
-    fn exti15_10(_: exti15_10::Context) {
-        unsafe {
+    #[task(binds = EXTI15_10,resources = [i2s2ext,exti])]
+    fn exti15_10(cx: exti15_10::Context) {
+        let i2s2ext = cx.resources.i2s2ext;
+        let exti = cx.resources.exti;
+        let ws = unsafe {
             let gpiob = &(*stm32::GPIOB::ptr());
-            let ws = gpiob.idr.read().idr12().bit();
-            let exti = &(*stm32::EXTI::ptr());
-            //erase the event
-            exti.pr.modify(|_, w| w.pr12().set_bit());
-            //look if ws/pb1 is high
-            if ws {
-                //disable interrupt on EXTI12
-                exti.imr.modify(|_, w| w.mr12().clear_bit());
-                let i2s2ext = &(*stm32::I2S2EXT::ptr());
-                i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
-                rprintln!("Resynced (EXTI0)");
-            }
+            gpiob.idr.read().idr12().bit()
+        };
+        //erase the event
+        exti.pr.modify(|_, w| w.pr12().set_bit());
+        //look if ws/pb1 is high
+        if ws {
+            //disable interrupt on EXTI12
+            exti.imr.modify(|_, w| w.mr12().clear_bit());
+            i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+            rprintln!("Resynced (EXTI0)");
         }
     }
 };
