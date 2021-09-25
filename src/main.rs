@@ -54,11 +54,11 @@ const APP: () = {
         exti: EXTI,
         wm8731: MyWm8731,
         samples: [I2sSample; 2],
-        buf: [I2sSample;BUF_SIZE],
+        buf: [I2sSample; BUF_SIZE],
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
-        let buf = [I2sSample::new();BUF_SIZE];
+        let buf = [I2sSample::new(); BUF_SIZE];
         let samples = [I2sSample::new(); 2];
         rtt_init_print!();
         rprintln!("init");
@@ -135,55 +135,17 @@ const APP: () = {
         exti.imr.modify(|_, w| w.mr12().set_bit());
         //trigger interrupt on rising edge
         exti.rtsr.modify(|_, w| w.tr12().set_bit());
-        //i2s2 interrupt
-        let spi2 = device.SPI2;
-        spi2.cr2.modify(|_, w| {
-            w.txeie().clear_bit();
-            w.rxneie().set_bit();
-            w.errie().set_bit()
-        });
-        //i2s2_ext interrupt
-        let i2s2ext = device.I2S2EXT;
-        i2s2ext.cr2.modify(|_, w| {
-            w.txeie().set_bit();
-            w.rxneie().clear_bit();
-            w.errie().set_bit()
-        });
-        //setup spi2 peripheral into i2s mode
-        spi2.i2spr.modify(|_, w| {
-            unsafe { w.i2sdiv().bits(I2SDIV) };
-            w.odd().bit(ODD);
-            w.mckoe().bit(MCK)
-        });
-        spi2.i2scfgr.modify(|_, w| {
-            w.i2smod().i2smode(); //
-            w.i2scfg().master_rx(); //
-            w.pcmsync().long(); //
-            w.i2sstd().philips(); //
-            w.ckpol().idle_high(); //
-            w.datlen().twenty_four_bit(); //
-            w.chlen().thirty_two_bit(); //
-            w.i2se().disabled()
-        });
-        //setup i2s2ext peripheral
-        i2s2ext.i2spr.modify(|_, w| {
-            unsafe { w.i2sdiv().bits(I2SDIV) };
-            w.odd().bit(ODD);
-            w.mckoe().bit(MCK)
-        });
-        i2s2ext.i2scfgr.modify(|_, w| {
-            w.i2smod().i2smode(); //
-            w.i2scfg().slave_tx(); //
-            w.pcmsync().long(); //
-            w.i2sstd().philips(); //
-            w.ckpol().idle_high(); //
-            w.datlen().twenty_four_bit(); //
-            w.chlen().thirty_two_bit(); //
-            w.i2se().enabled()
-        });
+
+        let mut spi2 = device.SPI2;
+        setup_spi2(&mut spi2, I2SDIV, ODD, MCK);
+
+        let mut i2s2ext = device.I2S2EXT;
+        setup_i2s2ext(&mut i2s2ext, I2SDIV, ODD, MCK);
+
         //Active Control
         wm8731.send(active_control().active().into_command());
         //run i2s
+        i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
         spi2.i2scfgr.modify(|_, w| w.i2se().enabled());
         let mut pd = power_down();
         pd = pd.lineinpd().clear_bit();
@@ -222,8 +184,8 @@ const APP: () = {
         let buf = cx.resources.buf;
         for sample in &mut buf[range] {
             let mut smpl = StereoSample::from(*sample);
-            let sum  = smpl.l + smpl.r;
-            smpl = StereoSample{l:sum,r:sum};
+            let sum = smpl.l + smpl.r;
+            smpl = StereoSample { l: sum, r: sum };
             *sample = smpl.into();
         }
     }
@@ -272,12 +234,12 @@ const APP: () = {
                 let left = (RX_DATA[0] as u32) << 16 | (RX_DATA[1] as u32);
                 let right = (RX_DATA[2] as u32) << 16 | (RX_DATA[3] as u32);
                 buf[*ADC_IDX] = I2sSample { l: left, r: right };
-                if *ADC_IDX == (BUF_SIZE-1) {
-                    let _ = cx.spawn.process(BUF_SIZE/2..BUF_SIZE);
-                } else if *ADC_IDX == (BUF_SIZE/2 -1) {
-                    let _ = cx.spawn.process(0..BUF_SIZE/2);
+                if *ADC_IDX == (BUF_SIZE - 1) {
+                    let _ = cx.spawn.process(BUF_SIZE / 2..BUF_SIZE);
+                } else if *ADC_IDX == (BUF_SIZE / 2 - 1) {
+                    let _ = cx.spawn.process(0..BUF_SIZE / 2);
                 }
-                *ADC_IDX = (*ADC_IDX + 1) & (BUF_SIZE-1);
+                *ADC_IDX = (*ADC_IDX + 1) & (BUF_SIZE - 1);
 
                 //let _ = cx.spawn.process(false);
                 //rprintln!(
@@ -336,7 +298,7 @@ const APP: () = {
                 i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[2]));
             } else if *PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
                 //right lsb, end of audio frame
-                let dac_idx = (*ADC_IDX + 2) & (BUF_SIZE-1);
+                let dac_idx = (*ADC_IDX + 2) & (BUF_SIZE - 1);
                 i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[3]));
                 TX_DATA[0] = (buf[dac_idx].l >> 16) as u16;
                 TX_DATA[1] = buf[dac_idx].l as u16;
