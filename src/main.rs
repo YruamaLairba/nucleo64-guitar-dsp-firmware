@@ -113,76 +113,7 @@ const APP: () = {
             clocks,
         );
         let mut wm8731 = Wm8731::new(SPIInterfaceU8::new(spi1, pb2));
-        //line input: unmute, apply setup for both channel, set volume to 0dB.
-        let lli = left_line_in()
-            .inmute()
-            .clear_bit()
-            .inboth()
-            .set_bit()
-            .invol()
-            .db(InVoldB::P0DB)
-            .into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(lli)));
-        wm8731.send(lli);
-        //headphone out: volume -12 dB, no zero cross detection, apply setup to both channel
-        let lho = left_headphone_out()
-            .hpvol()
-            .db(HpVoldB::N12DB)
-            .zcen()
-            .clear_bit()
-            .hpboth()
-            .set_bit()
-            .into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(lho)));
-        wm8731.send(lho);
-        //analogue audio path control
-        let mut aap = analogue_audio_path();
-        aap = aap.micboost().disable();
-        aap = aap.mutemic().enable();
-        aap = aap.insel().line();
-        aap = aap.bypass().disable();
-        aap = aap.dacsel().select();
-        aap = aap.sidetone().disable();
-        let aap = aap.into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(aap)));
-        wm8731.send(aap);
-        //digital audio path control default adchp hpor ans deemp are ok
-        let mut dap = digital_audio_path();
-        dap = dap.dacmu().disable();
-        let dap = dap.into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(dap)));
-        wm8731.send(dap);
-        //power down: by default all is power down, ie all field are set to 1
-        let mut pd = power_down();
-        pd = pd.lineinpd().clear_bit();
-        pd = pd.adcpd().clear_bit();
-        pd = pd.dacpd().clear_bit();
-        pd = pd.outpd().set_bit();
-        pd = pd.oscpd().set_bit();
-        pd = pd.clkoutpd().set_bit();
-        pd = pd.poweroff().clear_bit();
-        //rprintln!("{:016b}", u16::from(Frame::from(pd)));
-        wm8731.send(pd.into_command());
-        //digital audi interface
-        let mut dai = digital_audio_interface();
-        dai = dai.format().i2s();
-        dai = dai.iwl().iwl_32_bits();
-        dai = dai.lrp().clear_bit();
-        dai = dai.lrswap().disable();
-        dai = dai.ms().slave();
-        dai = dai.bclkinv().disable();
-        let dai = dai.into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(dai)));
-        wm8731.send(dai);
-
-        //Sampling control: use the raw method
-        let s = sampling();
-        let s = s.usb_normal().normal();
-        let s = s.bosr().clear_bit(); //for 256 fs
-        let s = s.sr().sr_0b0000();
-        let s = s.into_command();
-        //rprintln!("{:016b}", u16::from(Frame::from(s)));
-        wm8731.send(s);
+        setup_wm8731(&mut wm8731);
 
         //Setup i2s2 and i2s2_ext
         //gpio
@@ -254,6 +185,11 @@ const APP: () = {
         wm8731.send(active_control().active().into_command());
         //run i2s
         spi2.i2scfgr.modify(|_, w| w.i2se().enabled());
+        let mut pd = power_down();
+        pd = pd.lineinpd().clear_bit();
+        pd = pd.adcpd().clear_bit();
+        pd = pd.dacpd().clear_bit();
+        pd = pd.poweroff().clear_bit();
         pd = pd.outpd().clear_bit();
         wm8731.send(pd.into_command());
         rprintln!("init done");
