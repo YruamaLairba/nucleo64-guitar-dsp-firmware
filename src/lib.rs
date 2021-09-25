@@ -17,8 +17,8 @@ impl StereoSample {
 impl From<I2sSample> for StereoSample {
     fn from(smpl: I2sSample) -> Self {
         Self {
-            l: smpl.l.rotate_left(16),
-            r: smpl.r.rotate_left(16),
+            l: smpl.l.rotate_left(16) as i32,
+            r: smpl.r.rotate_left(16) as i32,
         }
     }
 }
@@ -28,8 +28,8 @@ impl From<I2sSample> for StereoSample {
 //for DMA use i need a guaranted layout
 #[repr(C,align(4))]
 pub struct I2sSample {
-    l: i32,
-    r: i32,
+    pub l: u32,
+    pub r: u32,
 }
 
 impl I2sSample {
@@ -42,8 +42,8 @@ impl From<StereoSample> for I2sSample {
     fn from(smpl: StereoSample) -> Self {
         Self {
 
-            l: smpl.l.rotate_right(16),
-            r: smpl.r.rotate_right(16),
+            l: smpl.l.rotate_right(16) as u32,
+            r: smpl.r.rotate_right(16) as u32,
         }
     }
 }

@@ -51,11 +51,13 @@ const APP: () = {
         i2s2ext: I2S2EXT,
         exti: EXTI,
         wm8731: MyWm8731,
+        samples: [I2sSample; 2],
         dma_buf: Buffer,
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
         let dma_buf = Buffer::new();
+        let samples = [I2sSample::new(); 2];
         rtt_init_print!();
         rprintln!("init");
         let device = cx.device;
@@ -257,6 +259,7 @@ const APP: () = {
             dma_buf,
             exti,
             i2s2ext,
+            samples,
             spi2,
             wm8731,
         }
@@ -276,17 +279,24 @@ const APP: () = {
         }
     }
 
-    #[task(binds = SPI2, resources = [spi2,i2s2ext,exti,wm8731])]
+    #[task(resources = [samples])]
+    fn process(cx: process::Context, idx: bool) {
+        let samples = cx.resources.samples;
+        let smpl = StereoSample::from(samples[idx as usize]);
+        samples[idx as usize] = smpl.into();
+    }
+
+    #[task(binds = SPI2, resources = [spi2,i2s2ext,exti,wm8731,samples],spawn = [process])]
     fn spi2(cx: spi2::Context) {
         static mut PREVIOUS_RX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut RX_DATA: [u16; 4] = [0; 4];
         static mut TX_DATA: [u16; 4] = [0; 4];
-        static mut SAMPLE: (u32, u32) = (0, 0);
 
         let spi2 = cx.resources.spi2;
         let i2s2ext = cx.resources.i2s2ext;
         let exti = cx.resources.exti;
+        let samples = cx.resources.samples;
         if spi2.sr.read().fre().bit() {
             rprintln!("Frame Error");
         }
@@ -318,7 +328,8 @@ const APP: () = {
                 RX_DATA[3] = data;
                 let left = (RX_DATA[0] as u32) << 16 | (RX_DATA[1] as u32);
                 let right = (RX_DATA[2] as u32) << 16 | (RX_DATA[3] as u32);
-                *SAMPLE = (left, right);
+                samples[0] = I2sSample { l: left, r: right };
+                //let _ = cx.spawn.process(false);
                 //rprintln!(
                 //    "RX: {:016b} {:016b} {:016b} {:016b}",
                 //    RX_DATA[0],
@@ -376,10 +387,10 @@ const APP: () = {
             } else if *PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
                 //right lsb, end of audio frame
                 i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[3]));
-                TX_DATA[0] = (SAMPLE.0 >> 16) as u16;
-                TX_DATA[1] = SAMPLE.0 as u16;
-                TX_DATA[2] = (SAMPLE.0 >> 16) as u16;
-                TX_DATA[3] = SAMPLE.0 as u16;
+                TX_DATA[0] = (samples[0].l >> 16) as u16;
+                TX_DATA[1] = samples[0].l as u16;
+                TX_DATA[2] = (samples[0].r >> 16) as u16;
+                TX_DATA[3] = samples[0].r as u16;
             } else {
                 unreachable!()
             };
@@ -404,6 +415,13 @@ const APP: () = {
             i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
             rprintln!("Resynced (EXTI0)");
         }
+    }
+    //unused interrupt for sofware task
+    extern "C" {
+        fn EXTI0();
+        fn EXTI1();
+        fn EXTI2();
+        fn EXTI3();
     }
 };
 
