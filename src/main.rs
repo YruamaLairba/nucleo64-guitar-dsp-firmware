@@ -44,6 +44,8 @@ type MyWm8731 = Wm8731<
     >,
 >;
 
+const BUF_SIZE: usize = 4;
+
 #[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
@@ -52,11 +54,11 @@ const APP: () = {
         exti: EXTI,
         wm8731: MyWm8731,
         samples: [I2sSample; 2],
-        dma_buf: Buffer,
+        buf: [I2sSample;BUF_SIZE],
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
-        let dma_buf = Buffer::new();
+        let buf = [I2sSample::new();BUF_SIZE];
         let samples = [I2sSample::new(); 2];
         rtt_init_print!();
         rprintln!("init");
@@ -256,7 +258,7 @@ const APP: () = {
         wm8731.send(pd.into_command());
         rprintln!("init done");
         init::LateResources {
-            dma_buf,
+            buf,
             exti,
             i2s2ext,
             samples,
@@ -279,24 +281,29 @@ const APP: () = {
         }
     }
 
-    #[task(resources = [samples])]
-    fn process(cx: process::Context, idx: bool) {
-        let samples = cx.resources.samples;
-        let smpl = StereoSample::from(samples[idx as usize]);
-        samples[idx as usize] = smpl.into();
+    #[task(resources = [buf])]
+    fn process(cx: process::Context, range: core::ops::Range<usize>) {
+        let buf = cx.resources.buf;
+        for sample in &mut buf[range] {
+            let mut smpl = StereoSample::from(*sample);
+            let sum  = smpl.l + smpl.r;
+            smpl = StereoSample{l:sum,r:sum};
+            *sample = smpl.into();
+        }
     }
 
-    #[task(binds = SPI2, resources = [spi2,i2s2ext,exti,wm8731,samples],spawn = [process])]
+    #[task(binds = SPI2,  resources = [spi2,i2s2ext,exti,wm8731,buf],spawn = [process])]
     fn spi2(cx: spi2::Context) {
         static mut PREVIOUS_RX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
         static mut RX_DATA: [u16; 4] = [0; 4];
         static mut TX_DATA: [u16; 4] = [0; 4];
+        static mut ADC_IDX: usize = 0;
 
         let spi2 = cx.resources.spi2;
         let i2s2ext = cx.resources.i2s2ext;
         let exti = cx.resources.exti;
-        let samples = cx.resources.samples;
+        let buf = cx.resources.buf;
         if spi2.sr.read().fre().bit() {
             rprintln!("Frame Error");
         }
@@ -328,7 +335,14 @@ const APP: () = {
                 RX_DATA[3] = data;
                 let left = (RX_DATA[0] as u32) << 16 | (RX_DATA[1] as u32);
                 let right = (RX_DATA[2] as u32) << 16 | (RX_DATA[3] as u32);
-                samples[0] = I2sSample { l: left, r: right };
+                buf[*ADC_IDX] = I2sSample { l: left, r: right };
+                if *ADC_IDX == (BUF_SIZE-1) {
+                    let _ = cx.spawn.process(BUF_SIZE/2..BUF_SIZE);
+                } else if *ADC_IDX == (BUF_SIZE/2 -1) {
+                    let _ = cx.spawn.process(0..BUF_SIZE/2);
+                }
+                *ADC_IDX = (*ADC_IDX + 1) & (BUF_SIZE-1);
+
                 //let _ = cx.spawn.process(false);
                 //rprintln!(
                 //    "RX: {:016b} {:016b} {:016b} {:016b}",
@@ -386,11 +400,12 @@ const APP: () = {
                 i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[2]));
             } else if *PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
                 //right lsb, end of audio frame
+                let dac_idx = (*ADC_IDX + 2) & (BUF_SIZE-1);
                 i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[3]));
-                TX_DATA[0] = (samples[0].l >> 16) as u16;
-                TX_DATA[1] = samples[0].l as u16;
-                TX_DATA[2] = (samples[0].r >> 16) as u16;
-                TX_DATA[3] = samples[0].r as u16;
+                TX_DATA[0] = (buf[dac_idx].l >> 16) as u16;
+                TX_DATA[1] = buf[dac_idx].l as u16;
+                TX_DATA[2] = (buf[dac_idx].r >> 16) as u16;
+                TX_DATA[3] = buf[dac_idx].r as u16;
             } else {
                 unreachable!()
             };
