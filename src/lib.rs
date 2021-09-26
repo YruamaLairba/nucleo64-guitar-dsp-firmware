@@ -86,6 +86,7 @@ pub fn setup_dma1(dma1: &mut DMA1, buf: &mut [I2sSample], spi2: &mut SPI2, i2s2e
 
     //configure fifo usage
     dma1.st[3].fcr.modify(|_, w| {
+        w.feie().enabled();
         w.dmdis().clear_bit() //direct mode, no fifo
     });
 
@@ -142,6 +143,7 @@ pub fn setup_dma1(dma1: &mut DMA1, buf: &mut [I2sSample], spi2: &mut SPI2, i2s2e
 
     //configure fifo usage
     dma1.st[4].fcr.modify(|_, w| {
+        w.feie().enabled();
         w.dmdis().clear_bit() //direct mode, no fifo
     });
 

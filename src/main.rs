@@ -45,7 +45,7 @@ type MyWm8731 = Wm8731<
     >,
 >;
 
-const BUF_SIZE: usize = 4;
+const BUF_SIZE: usize = 64;
 
 #[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
@@ -310,6 +310,85 @@ const APP: () = {
             spi2.cr2.modify(|_, w| w.rxneie().set_bit());
             dma1.st[3].cr.modify(|_, w| w.en().disabled());
         }
+    }
+
+    #[task(binds = DMA1_STREAM3,resources = [dma1,spi2])]
+    fn dma1_stream3(cx: dma1_stream3::Context) {
+        let dma1 = cx.resources.dma1;
+        let spi2 = cx.resources.spi2;
+        let _remain = dma1.st[3].ndtr.read().bits();
+        let lisr_read = dma1.lisr.read();
+        if lisr_read.tcif3().bit_is_set() {
+            //TODO transmit upper half buf to process
+            rprintln!("Transfer complete");
+        };
+        if lisr_read.htif3().bit_is_set() {
+            //TODO transmit lower half buf to process
+        };
+        if lisr_read.teif3().bit_is_set()
+            || lisr_read.dmeif3().bit_is_set()
+            || lisr_read.feif3().bit_is_set()
+        {
+            if lisr_read.teif3().bit_is_set() {
+                rprintln!("DMA1 Stream3 transfer error")
+            };
+            if lisr_read.dmeif3().bit_is_set() {
+                rprintln!("DMA1 Stream3 direct mode error")
+            };
+            if lisr_read.feif3().bit_is_set() {
+                rprintln!("DMA1 Stream3 fifo error")
+            };
+            spi2.cr2.modify(|_, w| w.rxneie().set_bit());
+            dma1.st[3].cr.modify(|_, w| w.en().disabled());
+        }
+        //clear all interrupt flag
+        dma1.lifcr.write(|w| {
+            w.ctcif3().set_bit();
+            w.chtif3().set_bit();
+            w.cteif3().set_bit();
+            w.cdmeif3().set_bit();
+            w.cfeif3().set_bit()
+        });
+    }
+
+    #[task(binds = DMA1_STREAM4,resources = [dma1,i2s2ext])]
+    fn dma1_stream4(cx: dma1_stream4::Context) {
+        //rprintln!("DMA1_STREAM3");
+        let dma1 = cx.resources.dma1;
+        let i2s2ext = cx.resources.i2s2ext;
+        //let remain = dma1.st[4].ndtr.read().bits();
+        let hisr_read = dma1.hisr.read();
+        if hisr_read.tcif4().bit_is_set() {
+            //rprintln!("DMA1 Stream4 transfert complete, Remain {}", remain);
+            rprintln!("st4 complete");
+        }
+        if hisr_read.htif4().bit_is_set() {
+            //rprintln!("DMA1 Stream4 half transfert complete, Remain {}", remain);
+        };
+        if hisr_read.teif4().bit_is_set()
+            || hisr_read.dmeif4().bit_is_set()
+            || hisr_read.feif4().bit_is_set()
+        {
+            if hisr_read.teif4().bit_is_set() {
+                rprintln!("DMA1 Stream4 transfer error")
+            };
+            if hisr_read.dmeif4().bit_is_set() {
+                rprintln!("DMA1 Stream4 direct mode error")
+            };
+            if hisr_read.feif4().bit_is_set() {
+                rprintln!("DMA1 Stream4 fifo error")
+            };
+            i2s2ext.cr2.modify(|_, w| w.txeie().set_bit());
+            dma1.st[4].cr.modify(|_, w| w.en().disabled());
+        }
+        //clear all interrupt flag
+        dma1.hifcr.write(|w| {
+            w.ctcif4().set_bit();
+            w.chtif4().set_bit();
+            w.cteif4().set_bit();
+            w.cdmeif4().set_bit();
+            w.cfeif4().set_bit()
+        });
     }
     #[task(binds = EXTI15_10,resources = [i2s2ext,exti])]
     fn exti15_10(cx: exti15_10::Context) {
