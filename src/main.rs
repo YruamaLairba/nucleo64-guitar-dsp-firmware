@@ -58,7 +58,7 @@ const APP: () = {
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
-        let buf = [I2sSample::new(); BUF_SIZE];
+        let mut buf = [I2sSample::new(); BUF_SIZE];
         let samples = [I2sSample::new(); 2];
         rtt_init_print!();
         rprintln!("init");
@@ -141,6 +141,9 @@ const APP: () = {
 
         let mut i2s2ext = device.I2S2EXT;
         setup_i2s2ext(&mut i2s2ext, I2SDIV, ODD, MCK);
+
+        let mut dma1 = device.DMA1;
+        setup_dma1(&mut dma1, &mut buf, &mut spi2, &mut i2s2ext);
 
         //Active Control
         wm8731.send(active_control().active().into_command());

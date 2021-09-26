@@ -1,6 +1,6 @@
 #![no_std]
 use core::mem::size_of;
-use stm32f4xx_hal::stm32::{I2S2EXT, SPI2};
+use stm32f4xx_hal::stm32::{DMA1, I2S2EXT, SPI2};
 use wm8731_alt::interface::WriteFrame;
 use wm8731_alt::prelude::*;
 use wm8731_alt::Wm8731;
@@ -65,6 +65,120 @@ impl Buffer {
             i2s_smpl: [I2sSample::new(); BUF_SIZE],
         }
     }
+}
+
+pub fn setup_dma1(dma1: &mut DMA1, buf: &mut [I2sSample], spi2: &mut SPI2, i2s2ext: &mut I2S2EXT) {
+    let nb_transfer = buf.len() * size_of::<I2sSample>() / 2;
+    //DMA setup for ADC (SPI2_RX : Stream 3 Channel 0)
+    //set the peripheral port register address
+    dma1.st[3]
+        .par
+        .modify(|_, w| unsafe { w.bits(&spi2.dr as *const _ as u32) });
+    //set the memory address
+    dma1.st[3]
+        .m0ar
+        .modify(|_, w| unsafe { w.bits(buf.as_ptr() as u32) });
+
+    //set number of data to be transferred
+    dma1.st[3]
+        .ndtr
+        .modify(|_, w| unsafe { w.bits(nb_transfer as _) });
+
+    //configure fifo usage
+    dma1.st[3].fcr.modify(|_, w| {
+        w.dmdis().clear_bit() //direct mode, no fifo
+    });
+
+    //step 9
+    dma1.st[3].cr.modify(|_, w| {
+        //select channel
+        w.chsel().bits(0);
+        //select flow controller
+        w.pfctrl().dma();
+        //stream priority
+        w.pl().medium();
+        //direction
+        w.dir().peripheral_to_memory();
+        //increment memory pointer ?
+        w.minc().incremented();
+        //increment peripheral pointer ?
+        w.pinc().fixed();
+        //memory burst
+        w.mburst().single();
+        //periph burst
+        w.pburst().single();
+        //periph data width
+        w.psize().bits16();
+        //memory data width
+        w.msize().bits16();
+        //circular mode ?
+        w.circ().enabled();
+        //double buffer ?
+        w.dbm().disabled();
+        //transfert complete interrupt
+        w.tcie().enabled();
+        //transfert complete interrupt
+        w.htie().enabled();
+        //error interrupts
+        w.teie().enabled();
+        w.dmeie().enabled()
+    });
+
+    //DMA stetup for the DAC (I2S2_EXT_TX : Stream 4 Channel 2)
+    //set the peripheral port register address
+    dma1.st[4]
+        .par
+        .modify(|_, w| unsafe { w.bits(&i2s2ext.dr as *const _ as u32) });
+
+    //set the memory address
+    dma1.st[4]
+        .m0ar
+        .modify(|_, w| unsafe { w.bits(buf.as_ptr() as u32) });
+
+    //set number of data to be transferred
+    dma1.st[4]
+        .ndtr
+        .modify(|_, w| unsafe { w.bits(nb_transfer as _) });
+
+    //configure fifo usage
+    dma1.st[4].fcr.modify(|_, w| {
+        w.dmdis().clear_bit() //direct mode, no fifo
+    });
+
+    //step 9
+    dma1.st[4].cr.modify(|_, w| {
+        //select channel
+        w.chsel().bits(2);
+        //select flow controller
+        w.pfctrl().dma();
+        //stream priority
+        w.pl().high();
+        //direction
+        w.dir().memory_to_peripheral();
+        //increment memory pointer ?
+        w.minc().incremented();
+        //increment peripheral pointer ?
+        w.pinc().fixed();
+        //memory burst
+        w.mburst().single();
+        //periph burst
+        w.pburst().single();
+        //periph data width
+        w.psize().bits16();
+        //memory data width
+        w.msize().bits16();
+        //circular mode ?
+        w.circ().enabled();
+        //double buffer ?
+        w.dbm().disabled();
+        //transfert complete interrupt
+        w.tcie().disabled();
+        //half transfert complete interrupt
+        w.htie().disabled();
+        //error interrupts
+        w.teie().enabled();
+        w.dmeie().enabled()
+    });
 }
 
 pub fn setup_spi2(spi2: &mut SPI2, i2sdiv: u8, odd: bool, mck: bool) {
