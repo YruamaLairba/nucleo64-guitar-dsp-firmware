@@ -5,6 +5,7 @@
 #![no_main]
 #![no_std]
 
+use core::mem::size_of;
 use core::panic::PanicInfo;
 use nucleo64_guitar_dsp_firmware::*;
 use rtt_target::{rprintln, rtt_init_print};
@@ -18,7 +19,7 @@ use stm32f4xx_hal::gpio::AF5;
 use stm32f4xx_hal::spi::NoMiso;
 use stm32f4xx_hal::spi::Spi;
 use stm32f4xx_hal::stm32::spi1::sr::CHSIDE_A;
-use stm32f4xx_hal::stm32::{EXTI, I2S2EXT, SPI1, SPI2};
+use stm32f4xx_hal::stm32::{DMA1, EXTI, I2S2EXT, SPI1, SPI2};
 use stm32f4xx_hal::{prelude::*, spi, stm32};
 use wm8731_alt::interface::SPIInterfaceU8;
 use wm8731_alt::prelude::*;
@@ -51,6 +52,7 @@ const APP: () = {
     struct Resources {
         spi2: SPI2,
         i2s2ext: I2S2EXT,
+        dma1: DMA1,
         exti: EXTI,
         wm8731: MyWm8731,
         buf: [I2sSample; BUF_SIZE],
@@ -158,6 +160,7 @@ const APP: () = {
         rprintln!("init done");
         init::LateResources {
             buf,
+            dma1,
             exti,
             i2s2ext,
             spi2,
@@ -190,125 +193,122 @@ const APP: () = {
         }
     }
 
-    #[task(binds = SPI2,  resources = [spi2,i2s2ext,exti,wm8731,buf],spawn = [process])]
+    #[task(binds = SPI2,  resources = [spi2,i2s2ext,dma1,exti,wm8731,buf],spawn = [process])]
     fn spi2(cx: spi2::Context) {
-        static mut PREVIOUS_RX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
-        static mut PREVIOUS_TX_SIDE: CHSIDE_A = CHSIDE_A::RIGHT;
-        static mut RX_DATA: [u16; 4] = [0; 4];
-        static mut TX_DATA: [u16; 4] = [0; 4];
-        static mut ADC_IDX: usize = 0;
+        static mut PREVIOUS_ADC_SIDE: Option<CHSIDE_A> = None;
+        static mut PREVIOUS_DAC_SIDE: Option<CHSIDE_A> = None;
+        //static mut ADC_DATA: [u16; 4] = [0; 4];
+        //static mut DAC_DATA: [u16; 4] = [0; 4];
+        //static mut I2SEXT_FRE: bool = false;
 
         let spi2 = cx.resources.spi2;
         let i2s2ext = cx.resources.i2s2ext;
+        let dma1 = cx.resources.dma1;
         let exti = cx.resources.exti;
+        let wm8731 = cx.resources.wm8731;
         let buf = cx.resources.buf;
-        if spi2.sr.read().fre().bit() {
-            rprintln!("Frame Error");
-        }
-        if spi2.sr.read().ovr().bit() {
-            rprintln!("Overrun");
-            //this sequence reset the interrupt
-            let _ = spi2.dr.read().bits();
-            let _ = spi2.sr.read().bits();
-        }
-        if spi2.sr.read().udr().bit() {
-            rprintln!("underrun");
-            //clear the interrupt
-            let _ = spi2.sr.read().bits();
-        }
-        if spi2.sr.read().rxne().bit() {
-            let data = spi2.dr.read().dr().bits();
-            let side = spi2.sr.read().chside().variant();
-            if *PREVIOUS_RX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::LEFT {
-                //left msb
-                RX_DATA[0] = data;
-            } else if *PREVIOUS_RX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::LEFT {
-                //left lsb
-                RX_DATA[1] = data;
-            } else if *PREVIOUS_RX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::RIGHT {
-                //right msb
-                RX_DATA[2] = data;
-            } else if *PREVIOUS_RX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
-                //right lsb
-                RX_DATA[3] = data;
-                let left = (RX_DATA[0] as u32) << 16 | (RX_DATA[1] as u32);
-                let right = (RX_DATA[2] as u32) << 16 | (RX_DATA[3] as u32);
-                buf[*ADC_IDX] = I2sSample { l: left, r: right };
-                if *ADC_IDX == (BUF_SIZE - 1) {
-                    let _ = cx.spawn.process(BUF_SIZE / 2..BUF_SIZE);
-                } else if *ADC_IDX == (BUF_SIZE / 2 - 1) {
-                    let _ = cx.spawn.process(0..BUF_SIZE / 2);
+        //if *COUNT >= 48000 *4 {
+        //    *COUNT=0;
+        //    rprintln!("i2s i");
+        //}
+        //*COUNT += 1;
+        let dac_transfer = dma1.st[4].ndtr.read().bits() as usize;
+        let spi2_sr_read = spi2.sr.read();
+        let i2sext_sr_read = i2s2ext.sr.read();
+
+        if i2sext_sr_read.txe().bit() {
+            let side = i2sext_sr_read.chside().variant();
+            if dma1.st[4].cr.read().en().is_disabled() {
+                //Write garbage to avoid undesirable underrun interrupt
+                i2s2ext.dr.write(|w| w.dr().bits(0));
+                if *PREVIOUS_DAC_SIDE == Some(CHSIDE_A::RIGHT) && side == CHSIDE_A::RIGHT {
+                    i2s2ext.cr2.modify(|_, w| w.txeie().clear_bit());
+                    dma1.st[4].cr.modify(|_, w| w.en().enabled());
                 }
-                *ADC_IDX = (*ADC_IDX + 1) & (BUF_SIZE - 1);
-
-                //let _ = cx.spawn.process(false);
-                //rprintln!(
-                //    "RX: {:016b} {:016b} {:016b} {:016b}",
-                //    RX_DATA[0],
-                //    RX_DATA[1],
-                //    RX_DATA[2],
-                //    RX_DATA[3]
-                //);
             }
-
-            *PREVIOUS_RX_SIDE = side;
-            //rprintln!("{:b}", data);
+            *PREVIOUS_DAC_SIDE = Some(side);
         }
 
-        if i2s2ext.sr.read().fre().bit() {
-            rprintln!("ext Frame Error");
+        if spi2_sr_read.rxne().bit() {
+            let side = spi2_sr_read.chside().variant();
+            if dma1.st[3].cr.read().en().is_disabled() {
+                //Read data to avoid undesirable overrun interrupt
+                spi2.dr.read().dr().bits();
+                let nb_transfer = buf.len() * size_of::<I2sSample>() / 2;
+                //ensure ADC dma start just after the DAC dma
+                if *PREVIOUS_ADC_SIDE == Some(CHSIDE_A::RIGHT)
+                    && side == CHSIDE_A::RIGHT
+                    && dac_transfer <= (nb_transfer - 1)
+                    && dac_transfer >= (nb_transfer - 4)
+                {
+                    spi2.cr2.modify(|_, w| w.rxneie().clear_bit());
+                    dma1.st[3].cr.modify(|_, w| w.en().enabled());
+                }
+            }
+            *PREVIOUS_ADC_SIDE = Some(side);
+        }
+
+        //error management
+        let mut dac_not_sync = false;
+        let mut adc_not_sync = false;
+        if spi2_sr_read.fre().bit() || spi2_sr_read.ovr().bit() || spi2_sr_read.udr().bit() {
+            if spi2_sr_read.fre().bit() {
+                //can never happen in master mode
+                rprintln!("i2s Frame Error");
+            }
+            if spi2_sr_read.ovr().bit() {
+                rprintln!("i2s Overrun");
+            }
+            if spi2_sr_read.udr().bit() {
+                //can only happen in slave transmission mode
+                rprintln!("i2s underrun");
+            }
+            //clear error flags
+            spi2.dr.read();
+            spi2.sr.read();
+            adc_not_sync = true;
+        }
+        if i2sext_sr_read.fre().bit() {
+            rprintln!("i2sext Frame Error");
             //resynchronization
             i2s2ext.i2scfgr.modify(|_, w| w.i2se().disabled());
-            //couldn't find to get word select value
-            let ws = unsafe {
-                let gpiob = &(*stm32::GPIOB::ptr());
-                gpiob.idr.read().idr12().bit()
-            };
-            if ws {
-                i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
-                rprintln!("Resynced (I2S2EXT)");
-            } else {
-                exti.imr.modify(|_, w| w.mr12().set_bit());
-            }
+            i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+            //let gpiob = &(*stm32::GPIOB::ptr());
+            //let ws = gpiob.idr.read().idr12().bit();
+            //if ws {
+            //    rprintln!("Resynced (I2S2EXT)");
+            //}
+            //else {
+            //    rprintln!("ooops");
+            //    let exti = &(*stm32::EXTI::ptr());
+            //    exti.imr.modify(|_, w| w.mr12().set_bit());
+            //}
+            dac_not_sync = true;
         }
-        if i2s2ext.sr.read().ovr().bit() {
-            rprintln!("ext Overrun");
+        if i2sext_sr_read.ovr().bit() {
+            rprintln!("i2sext Overrun");
             //this sequence reset the interrupt
-            let _ = i2s2ext.dr.read().bits();
-            let _ = i2s2ext.sr.read().bits();
+            i2s2ext.dr.read();
+            i2s2ext.sr.read();
+            dac_not_sync = true;
         }
-        if i2s2ext.sr.read().udr().bit() {
-            rprintln!("ext underrun");
-            //clear the interrupt
-            let _ = i2s2ext.sr.read().bits();
+        if i2sext_sr_read.udr().bit() {
+            rprintln!("i2sext underrun");
+            //reset interrupt and reset i2sext
+            i2s2ext.sr.read();
             i2s2ext.i2scfgr.modify(|_, w| w.i2se().disabled());
             i2s2ext.i2scfgr.modify(|_, w| w.i2se().enabled());
+            dac_not_sync = true;
         }
-        if i2s2ext.sr.read().txe().bit() {
-            //let _data = i2s2ext.dr.read().dr().bits();
-            let side = i2s2ext.sr.read().chside().variant();
-            if *PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::LEFT {
-                //left msb
-                i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[0]));
-            } else if *PREVIOUS_TX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::LEFT {
-                //left lsb
-                i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[1]));
-            } else if *PREVIOUS_TX_SIDE == CHSIDE_A::LEFT && side == CHSIDE_A::RIGHT {
-                //right msb
-                i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[2]));
-            } else if *PREVIOUS_TX_SIDE == CHSIDE_A::RIGHT && side == CHSIDE_A::RIGHT {
-                //right lsb, end of audio frame
-                let dac_idx = (*ADC_IDX + 2) & (BUF_SIZE - 1);
-                i2s2ext.dr.write(|w| w.dr().bits(TX_DATA[3]));
-                TX_DATA[0] = (buf[dac_idx].l >> 16) as u16;
-                TX_DATA[1] = buf[dac_idx].l as u16;
-                TX_DATA[2] = (buf[dac_idx].r >> 16) as u16;
-                TX_DATA[3] = buf[dac_idx].r as u16;
-            } else {
-                unreachable!()
-            };
-
-            *PREVIOUS_TX_SIDE = side;
+        if dac_not_sync {
+            //adc dma need resynchronized
+            adc_not_sync = true;
+            i2s2ext.cr2.modify(|_, w| w.txeie().set_bit());
+            dma1.st[4].cr.modify(|_, w| w.en().disabled());
+        }
+        if adc_not_sync {
+            spi2.cr2.modify(|_, w| w.rxneie().set_bit());
+            dma1.st[3].cr.modify(|_, w| w.en().disabled());
         }
     }
     #[task(binds = EXTI15_10,resources = [i2s2ext,exti])]

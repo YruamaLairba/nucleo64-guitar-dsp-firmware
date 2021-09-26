@@ -182,11 +182,12 @@ pub fn setup_dma1(dma1: &mut DMA1, buf: &mut [I2sSample], spi2: &mut SPI2, i2s2e
 }
 
 pub fn setup_spi2(spi2: &mut SPI2, i2sdiv: u8, odd: bool, mck: bool) {
-    //i2s2 interrupt
+    //i2s2 interrupt and dma
     spi2.cr2.modify(|_, w| {
         w.txeie().clear_bit();
         w.rxneie().set_bit();
-        w.errie().set_bit()
+        w.errie().set_bit();
+        w.rxdmaen().set_bit()
     });
     //setup spi2 peripheral into i2s mode
     spi2.i2spr.modify(|_, w| {
@@ -207,11 +208,12 @@ pub fn setup_spi2(spi2: &mut SPI2, i2sdiv: u8, odd: bool, mck: bool) {
 }
 
 pub fn setup_i2s2ext(i2s2ext: &mut I2S2EXT, i2sdiv: u8, odd: bool, mck: bool) {
-    //i2s2_ext interrupt
+    //i2s2_ext interrupt and dma
     i2s2ext.cr2.modify(|_, w| {
         w.txeie().set_bit();
         w.rxneie().clear_bit();
-        w.errie().set_bit()
+        w.errie().set_bit();
+        w.txdmaen().set_bit()
     });
     //setup i2s2ext peripheral
     i2s2ext.i2spr.modify(|_, w| {
