@@ -53,13 +53,11 @@ const APP: () = {
         i2s2ext: I2S2EXT,
         exti: EXTI,
         wm8731: MyWm8731,
-        samples: [I2sSample; 2],
         buf: [I2sSample; BUF_SIZE],
     }
     #[init]
     fn init(cx: init::Context) -> init::LateResources {
         let mut buf = [I2sSample::new(); BUF_SIZE];
-        let samples = [I2sSample::new(); 2];
         rtt_init_print!();
         rprintln!("init");
         let device = cx.device;
@@ -162,7 +160,6 @@ const APP: () = {
             buf,
             exti,
             i2s2ext,
-            samples,
             spi2,
             wm8731,
         }
