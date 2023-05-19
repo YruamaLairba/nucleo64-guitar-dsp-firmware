@@ -12,14 +12,16 @@ mod app {
 
     use super::hal;
 
-    use hal::gpio::{Edge, Speed};
+    use hal::gpio::{Edge, NoPin, Speed};
     use hal::i2s::stm32_i2s_v12x::driver::*;
     use hal::i2s::DualI2s;
     use hal::pac::Interrupt;
     use hal::pac::{EXTI, SPI2};
     use hal::prelude::*;
+    use hal::spi::{self, Spi};
 
     use heapless::spsc::*;
+    use wm8731_another_hal::prelude::*;
 
     use rtt_target::{rprintln, rtt_init, set_print_channel};
 
@@ -82,6 +84,7 @@ mod app {
         let device = cx.device;
         let mut syscfg = device.SYSCFG.constrain();
         let mut exti = device.EXTI;
+        let gpioa = device.GPIOA.split();
         let gpiob = device.GPIOB.split();
         let gpioc = device.GPIOC.split();
         let rcc = device.RCC.constrain();
@@ -94,6 +97,71 @@ mod app {
             .pclk2(100.MHz())
             .i2s_clk(61440.kHz())
             .freeze();
+
+        //Spi com
+        let pa5 = gpioa.pa5; //CK
+        let pa7 = gpioa.pa7; //MOSI
+        let pb2 = gpiob.pb2.into_push_pull_output(); //CS
+                                                     //let _ = pb2.set_high();
+
+        let spi1_mode = spi::Mode {
+            polarity: spi::Polarity::IdleHigh,
+            phase: spi::Phase::CaptureOnSecondTransition, //With IdleHigh, capture on rising edge
+        };
+
+        let spi1 = Spi::new(
+            device.SPI1,
+            (pa5, NoPin::new(), pa7),
+            spi1_mode,
+            500.kHz(),
+            &clocks,
+        );
+
+        let mut wm8731 = Wm8731::new(SPIInterfaceU8::new(spi1, pb2));
+        {
+            //power down
+            rprintln!("Power Down");
+            wm8731.set_lineinpd(false);
+            wm8731.set_micpd(false);
+            wm8731.set_adcpd(false);
+            wm8731.set_dacpd(false);
+            wm8731.set_oscpd(false);
+            wm8731.set_clkoutpd(false);
+            wm8731.set_poweroff(false);
+            rprintln!("Mute headphone");
+            wm8731.set_both_hpvol(HpVoldB::MUTE, false);
+            rprintln!("Unmute line in");
+            wm8731.set_both_inmute(false);
+            wm8731.set_both_invol(InVoldB::Z0DB);
+            rprintln!("Anaoutput Path");
+            wm8731.set_micboost(false);
+            wm8731.set_mutemic(true);
+            wm8731.set_insel(InselV::Line);
+            wm8731.set_bypass(false);
+            wm8731.set_dacsel(true);
+            wm8731.set_sidetone(false);
+            //digital_audio_path
+            //wm8731.set_adchpd(false);
+            wm8731.set_dacmu(false);
+            //wm8731.set_deemp(false);
+            //digital_audio_interface
+            wm8731.set_format(FormatV::I2s);
+            wm8731.set_iwl(IwlV::Iwl16Bits);
+            wm8731.set_lrp(false);
+            wm8731.set_lrswap(false);
+            wm8731.set_ms(MsV::Slave);
+            wm8731.set_bclkinv(false);
+            //sampling
+            wm8731.set_sampling_rates(SamplingRates::ADC256_DAC256_A);
+            wm8731.set_clkidiv2(false);
+            wm8731.set_clkodiv2(false);
+            rprintln!("Out power up");
+            wm8731.set_outpd(false);
+            let hpvol = HpVoldB::N18DB;
+            rprintln!("Setting HP vol to {}", hpvol);
+            wm8731.set_both_hpvol(HpVoldB::N18DB, true);
+        }
+        wm8731.activate();
 
         // Workaround for corrupted last bit of data issue, see stm32f411 errata
         let mut pb13 = gpiob.pb13.into_alternate::<5>();
