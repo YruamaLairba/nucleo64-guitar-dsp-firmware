@@ -12,19 +12,21 @@ mod app {
 
     use super::hal;
 
-    use hal::gpio::{Edge, NoPin, Speed};
+    use hal::gpio::{Edge, NoPin, Output, Pin, Speed};
     use hal::i2s::stm32_i2s_v12x::driver::*;
     use hal::i2s::DualI2s;
     use hal::pac::Interrupt;
-    use hal::pac::{EXTI, SPI2};
+    use hal::pac::{self, EXTI, SPI2};
     use hal::prelude::*;
     use hal::spi::{self, Spi};
 
     use heapless::spsc::*;
+    use wm8731_another_hal::interface::SPIInterfaceU8;
     use wm8731_another_hal::prelude::*;
 
     use rtt_target::{rprintln, rtt_init, set_print_channel};
 
+    type Wm8731Codec = Wm8731<SPIInterfaceU8<Spi<pac::SPI1>, Pin<'B', 2, Output>>>;
     type DualI2s2Driver = DualI2sDriver<DualI2s<SPI2>, Master, Receive, Transmit, Philips>;
 
     // Part of the frame we currently transmit or receive
@@ -45,6 +47,7 @@ mod app {
     }
     #[shared]
     struct Shared {
+        wm8731: Wm8731Codec,
         #[lock_free]
         i2s2_driver: DualI2s2Driver,
         #[lock_free]
@@ -199,7 +202,11 @@ mod app {
         i2s2_driver.main().enable();
 
         (
-            Shared { i2s2_driver, exti },
+            Shared {
+                wm8731,
+                i2s2_driver,
+                exti,
+            },
             Local {
                 logs_chan,
                 adc_p,
