@@ -1,22 +1,32 @@
 #![no_std]
 #![no_main]
 
+use core::default::Default;
 use core::panic::PanicInfo;
+use core::sync::atomic::AtomicU16;
 use rtt_target::rprintln;
 
+use arr_macro::arr;
+
 use stm32f4xx_hal as hal;
+
+static I2SBUF: [AtomicU16; 128] = arr![AtomicU16::new(0);128];
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true,dispatchers = [EXTI0, EXTI1, EXTI2])]
 mod app {
     use core::fmt::Write;
 
     use super::hal;
+    use super::I2SBUF;
 
+    use hal::dma::config::DmaConfig;
+    use hal::dma::traits::{Stream, StreamISR};
+    use hal::dma::{DmaChannel, DmaDirection, Stream3, Stream4, StreamX, StreamsTuple, Transfer};
     use hal::gpio::{Edge, NoPin, Output, Pin, Speed};
     use hal::i2s::stm32_i2s_v12x::driver::*;
     use hal::i2s::DualI2s;
     use hal::pac::Interrupt;
-    use hal::pac::{self, EXTI, SPI2};
+    use hal::pac::{self, DMA1, EXTI, SPI2};
     use hal::prelude::*;
     use hal::spi::{self, Spi};
 
@@ -28,6 +38,8 @@ mod app {
 
     type Wm8731Codec = Wm8731<SPIInterfaceU8<Spi<pac::SPI1>, Pin<'B', 2, Output>>>;
     type DualI2s2Driver = DualI2sDriver<DualI2s<SPI2>, Master, Receive, Transmit, Philips>;
+    type AdcRxStream = StreamX<DMA1, 3>;
+    type DacTxStream = StreamX<DMA1, 4>;
 
     // Part of the frame we currently transmit or receive
     #[derive(Copy, Clone)]
@@ -50,6 +62,10 @@ mod app {
         wm8731: Wm8731Codec,
         #[lock_free]
         i2s2_driver: DualI2s2Driver,
+        #[lock_free]
+        adc_rx_stream: Stream3<DMA1>,
+        #[lock_free]
+        dac_tx_stream: Stream4<DMA1>,
         #[lock_free]
         exti: EXTI,
     }
@@ -74,7 +90,7 @@ mod app {
                     name: "Logs"
                 }
                 1: {
-                    size: 128
+                    size: 1024
                     name: "Panics"
                 }
             }
@@ -188,8 +204,10 @@ mod app {
         let mut i2s2_driver = DualI2sDriver::new(i2s2, i2s2_config);
         rprintln!("actual sample rate is {}", i2s2_driver.sample_rate());
         i2s2_driver.main().set_rx_interrupt(true);
+        i2s2_driver.main().set_rx_dma(true);
         i2s2_driver.main().set_error_interrupt(true);
         i2s2_driver.ext().set_tx_interrupt(true);
+        i2s2_driver.ext().set_tx_dma(true);
         i2s2_driver.ext().set_error_interrupt(true);
 
         // set up an interrupt on WS pin
@@ -199,12 +217,46 @@ mod app {
         // we will enable the ext part in interrupt
         ws_pin.enable_interrupt(&mut exti);
 
+        // dma setup
+        let streams = StreamsTuple::new(device.DMA1);
+        let mut adc_rx_stream = streams.3;
+        let mut dac_tx_stream = streams.4;
+
+        adc_rx_stream.set_channel(DmaChannel::Channel0);
+        adc_rx_stream.set_peripheral_address(i2s2_driver.main().data_register_address());
+        adc_rx_stream.set_memory_address(&I2SBUF as *const _ as u32);
+        adc_rx_stream.set_number_of_transfers(I2SBUF.len() as u16);
+        unsafe {
+            adc_rx_stream.set_memory_size(1);
+            adc_rx_stream.set_peripheral_size(1);
+        };
+        adc_rx_stream.set_memory_increment(true);
+        adc_rx_stream.set_circular_mode(true);
+        adc_rx_stream.set_direction(DmaDirection::PeripheralToMemory);
+        adc_rx_stream.set_interrupts_enable(true, true, true, true);
+        dac_tx_stream.set_channel(DmaChannel::Channel2);
+        dac_tx_stream.set_peripheral_address(i2s2_driver.main().data_register_address());
+        dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
+        dac_tx_stream.set_number_of_transfers(I2SBUF.len() as u16);
+        unsafe {
+            dac_tx_stream.set_memory_size(1);
+            dac_tx_stream.set_peripheral_size(1);
+        };
+        dac_tx_stream.set_memory_increment(false);
+        dac_tx_stream.set_circular_mode(true);
+        dac_tx_stream.set_direction(DmaDirection::MemoryToPeripheral);
+        dac_tx_stream.set_interrupts_enable(true, true, true, true);
+
+        unsafe { adc_rx_stream.enable() };
+        unsafe { dac_tx_stream.enable() };
         i2s2_driver.main().enable();
 
         (
             Shared {
                 wm8731,
                 i2s2_driver,
+                adc_rx_stream,
+                dac_tx_stream,
                 exti,
             },
             Local {
@@ -370,6 +422,48 @@ mod app {
             i2s2_driver.ext().write_data_register(0);
             i2s2_driver.ext().enable();
         }
+    }
+
+    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream])]
+    fn dma1_stream4(cx: dma1_stream4::Context) {
+        let dac_tx_stream = cx.shared.dac_tx_stream;
+        if DacTxStream::get_transfer_complete_flag() {
+            log::spawn("dac_tx_stream transfert complete").ok();
+        }
+        if DacTxStream::get_half_transfer_flag() {
+            log::spawn("dac_tx_stream half transfert complete").ok();
+        }
+        if DacTxStream::get_transfer_error_flag() {
+            log::spawn("dac_tx_stream transfert error").ok();
+        }
+        if DacTxStream::get_fifo_error_flag() {
+            log::spawn("dac_tx_stream fifo error").ok();
+        }
+        if DacTxStream::get_direct_mode_error_flag() {
+            log::spawn("dac_tx_stream direct mode error").ok();
+        }
+        dac_tx_stream.clear_interrupts();
+    }
+
+    #[task(priority = 4, binds = DMA1_STREAM3, shared = [adc_rx_stream])]
+    fn dma1_stream3(cx: dma1_stream3::Context) {
+        let adc_rx_stream = cx.shared.adc_rx_stream;
+        if AdcRxStream::get_transfer_complete_flag() {
+            log::spawn("adc_rx_stream transfert complete").ok();
+        }
+        if AdcRxStream::get_half_transfer_flag() {
+            log::spawn("adc_rx_stream half transfert complete").ok();
+        }
+        if AdcRxStream::get_transfer_error_flag() {
+            log::spawn("adc_rx_stream transfert error").ok();
+        }
+        if AdcRxStream::get_fifo_error_flag() {
+            log::spawn("adc_rx_stream fifo error").ok();
+        }
+        if AdcRxStream::get_direct_mode_error_flag() {
+            log::spawn("adc_rx_stream direct mode error").ok();
+        }
+        adc_rx_stream.clear_interrupts();
     }
 }
 
