@@ -10,11 +10,12 @@ use arr_macro::arr;
 
 use stm32f4xx_hal as hal;
 
-static I2SBUF: [AtomicU16; 128] = arr![AtomicU16::new(0);128];
+static I2SBUF: [AtomicU16; 256] = arr![AtomicU16::new(0);256];
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true,dispatchers = [EXTI0, EXTI1, EXTI2])]
 mod app {
     use core::fmt::Write;
+    use core::sync::atomic::Ordering::*;
 
     use super::hal;
     use super::I2SBUF;
@@ -57,6 +58,29 @@ mod app {
             Self::LeftMsb
         }
     }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum I2sErr {
+        I2sMainOvr,
+        I2sMainUdr,
+        I2sMainFre,
+        I2sExtOvr,
+        I2sExtUdr,
+        I2sExtFre,
+    }
+    use I2sErr::*;
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum Log {
+        I2sError(I2sErr),
+        DacTxStreamTransferComplete(u16),
+        DacTxStreamHalfTransfer(u16),
+        DacTxStreamTransferError,
+        DacTxStreamFifoError(u16, I2sErr),
+        DacTxStreamDirectModeError,
+    }
+    use Log::*;
+
     #[shared]
     struct Shared {
         wm8731: Wm8731Codec,
@@ -81,6 +105,22 @@ mod app {
 
     #[init(local = [queue_1: Queue<(i32,i32), 2> = Queue::new(),queue_2: Queue<(i32,i32), 2> = Queue::new()])]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
+        let buf_iter = I2SBUF.chunks(4);
+        let nb_smpl = buf_iter.len();
+        for (i, e) in buf_iter.enumerate() {
+            let smpl = if i < nb_smpl / 2 {
+                0x2000_0000u32
+            } else {
+                0xAFFF_FFFFu32
+            };
+            let msb = (smpl >> 16) as u16;
+            let lsb = (smpl & 0x0000_FFFF) as u16;
+            e[0].store(lsb, Release);
+            e[2].store(lsb, Release);
+            e[1].store(msb, Release);
+            e[3].store(msb, Release);
+        }
+
         let queue_1 = cx.local.queue_1;
         let queue_2 = cx.local.queue_2;
         let channels = rtt_init! {
@@ -135,6 +175,8 @@ mod app {
             500.kHz(),
             &clocks,
         );
+
+        rprintln!("I2SBUF{:?}", &I2SBUF);
 
         let mut wm8731 = Wm8731::new(SPIInterfaceU8::new(spi1, pb2));
         {
@@ -235,20 +277,20 @@ mod app {
         adc_rx_stream.set_direction(DmaDirection::PeripheralToMemory);
         adc_rx_stream.set_interrupts_enable(true, true, true, true);
         dac_tx_stream.set_channel(DmaChannel::Channel2);
-        dac_tx_stream.set_peripheral_address(i2s2_driver.main().data_register_address());
+        dac_tx_stream.set_peripheral_address(i2s2_driver.ext().data_register_address());
         dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
         dac_tx_stream.set_number_of_transfers(I2SBUF.len() as u16);
         unsafe {
             dac_tx_stream.set_memory_size(1);
             dac_tx_stream.set_peripheral_size(1);
         };
-        dac_tx_stream.set_memory_increment(false);
+        dac_tx_stream.set_memory_increment(true);
         dac_tx_stream.set_circular_mode(true);
         dac_tx_stream.set_direction(DmaDirection::MemoryToPeripheral);
         dac_tx_stream.set_interrupts_enable(true, true, true, true);
 
-        unsafe { adc_rx_stream.enable() };
-        unsafe { dac_tx_stream.enable() };
+        //unsafe { adc_rx_stream.enable() };
+        //unsafe { dac_tx_stream.enable() };
         i2s2_driver.main().enable();
 
         (
@@ -278,8 +320,8 @@ mod app {
 
     // Printing message directly in a i2s interrupt can cause timing issues.
     #[task(capacity = 10, local = [logs_chan])]
-    fn log(cx: log::Context, message: &'static str) {
-        writeln!(cx.local.logs_chan, "{}", message).unwrap();
+    fn log(cx: log::Context, log: Log) {
+        writeln!(cx.local.logs_chan, "{:?}", log).unwrap();
     }
 
     // processing audio
@@ -315,10 +357,11 @@ mod app {
             adc_p,
             dac_c
         ],
-        shared = [i2s2_driver, exti]
+        shared = [i2s2_driver, dac_tx_stream, exti]
     )]
     fn i2s2(cx: i2s2::Context) {
         let i2s2_driver = cx.shared.i2s2_driver;
+        let dac_tx_stream = cx.shared.dac_tx_stream;
 
         // handling "main" part
         let main_frame_state = cx.local.main_frame_state;
@@ -354,7 +397,7 @@ mod app {
             }
         }
         if status.ovr() {
-            log::spawn("i2s2 Overrun").ok();
+            log::spawn(I2sError(I2sMainOvr)).ok();
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
@@ -367,7 +410,7 @@ mod app {
         let exti = cx.shared.exti;
         let status = i2s2_driver.ext().status();
         // it's better to write data first to avoid to trigger udr flag
-        if status.txe() {
+        if !DacTxStream::is_enabled() && status.txe() {
             let data;
             match (*ext_frame_state, status.chside()) {
                 (LeftMsb, Channel::Left) => {
@@ -397,50 +440,58 @@ mod app {
             i2s2_driver.ext().write_data_register(data);
         }
         if status.fre() {
-            log::spawn("i2s2 Frame error").ok();
+            log::spawn(I2sError(I2sExtFre)).ok();
             i2s2_driver.ext().disable();
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         if status.udr() {
-            log::spawn("i2s2 udr").ok();
+            log::spawn(I2sError(I2sExtUdr)).ok();
             i2s2_driver.ext().status();
             i2s2_driver.ext().write_data_register(0);
         }
     }
 
     // Look WS line for the "ext" part (re) synchronisation
-    #[task(priority = 4, binds = EXTI15_10, shared = [i2s2_driver,exti])]
+    #[task(priority = 4, binds = EXTI15_10, shared = [i2s2_driver,dac_tx_stream,exti])]
     fn exti15_10(cx: exti15_10::Context) {
         let i2s2_driver = cx.shared.i2s2_driver;
         let exti = cx.shared.exti;
+        let dac_tx_stream = cx.shared.dac_tx_stream;
         let ws_pin = i2s2_driver.ws_pin_mut();
         // check if that pin triggered the interrupt
         if ws_pin.check_interrupt() {
             // Here we know ws pin is high because the interrupt was triggerd by it's rising edge
             ws_pin.clear_interrupt_pending_bit();
             ws_pin.disable_interrupt(exti);
+            unsafe { dac_tx_stream.enable() };
+            i2s2_driver.ext().set_tx_interrupt(false);
             i2s2_driver.ext().write_data_register(0);
             i2s2_driver.ext().enable();
         }
     }
 
-    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream])]
+    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream,i2s2_driver])]
     fn dma1_stream4(cx: dma1_stream4::Context) {
         let dac_tx_stream = cx.shared.dac_tx_stream;
+        let i2s2_driver = cx.shared.i2s2_driver;
+        let nb_transfers = DacTxStream::get_number_of_transfers();
         if DacTxStream::get_transfer_complete_flag() {
-            log::spawn("dac_tx_stream transfert complete").ok();
+            //log::spawn(DacTxStreamTransferComplete(nb_transfers)).ok();
         }
         if DacTxStream::get_half_transfer_flag() {
-            log::spawn("dac_tx_stream half transfert complete").ok();
+            //log::spawn(DacTxStreamHalfTransfer(nb_transfers)).ok();
         }
         if DacTxStream::get_transfer_error_flag() {
-            log::spawn("dac_tx_stream transfert error").ok();
+            log::spawn(DacTxStreamTransferError).ok();
         }
         if DacTxStream::get_fifo_error_flag() {
-            log::spawn("dac_tx_stream fifo error").ok();
+            let status = i2s2_driver.ext().status();
+            if status.udr() {
+                log::spawn(DacTxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
+            }
         }
         if DacTxStream::get_direct_mode_error_flag() {
-            log::spawn("dac_tx_stream direct mode error").ok();
+            log::spawn(DacTxStreamDirectModeError).ok();
         }
         dac_tx_stream.clear_interrupts();
     }
@@ -449,19 +500,19 @@ mod app {
     fn dma1_stream3(cx: dma1_stream3::Context) {
         let adc_rx_stream = cx.shared.adc_rx_stream;
         if AdcRxStream::get_transfer_complete_flag() {
-            log::spawn("adc_rx_stream transfert complete").ok();
+            //log::spawn("adc_rx_stream transfert complete").ok();
         }
         if AdcRxStream::get_half_transfer_flag() {
-            log::spawn("adc_rx_stream half transfert complete").ok();
+            //log::spawn("adc_rx_stream half transfert complete").ok();
         }
         if AdcRxStream::get_transfer_error_flag() {
-            log::spawn("adc_rx_stream transfert error").ok();
+            //log::spawn("adc_rx_stream transfert error").ok();
         }
         if AdcRxStream::get_fifo_error_flag() {
-            log::spawn("adc_rx_stream fifo error").ok();
+            //log::spawn("adc_rx_stream fifo error").ok();
         }
         if AdcRxStream::get_direct_mode_error_flag() {
-            log::spawn("adc_rx_stream direct mode error").ok();
+            //log::spawn("adc_rx_stream direct mode error").ok();
         }
         adc_rx_stream.clear_interrupts();
     }
