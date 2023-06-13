@@ -6,7 +6,7 @@ name = "nucleo64-guitar-dsp-firmware"
 version = "0.1.0"
 
 [dependencies]
-#cortex-m = "0.6.0"
+cortex-m = "0.7"
 #cortex-m-rt = "0.6.10"
 cortex-m-rtic = "1.1.4"
 #panic-halt = "0.2.0"
