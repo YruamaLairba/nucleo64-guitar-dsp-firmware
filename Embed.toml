@@ -62,3 +62,6 @@ enabled = false
 # The connection string in host:port format wher the GDB server will open a socket.
 # gdb_connection_string = "localhost:3333"
 gdb_connection_string = "127.0.0.1:1337"
+
+[noflash.flashing]
+enabled = false
