@@ -248,9 +248,9 @@ mod app {
         i2s2_driver.main().set_rx_interrupt(true);
         i2s2_driver.main().set_rx_dma(true);
         i2s2_driver.main().set_error_interrupt(true);
-        i2s2_driver.ext().set_tx_interrupt(true);
+        i2s2_driver.ext().set_tx_interrupt(false);
         i2s2_driver.ext().set_tx_dma(true);
-        i2s2_driver.ext().set_error_interrupt(true);
+        i2s2_driver.ext().set_error_interrupt(false);
 
         // set up an interrupt on WS pin
         let ws_pin = i2s2_driver.ws_pin_mut();
@@ -409,39 +409,15 @@ mod app {
         let dac_c = cx.local.dac_c;
         let exti = cx.shared.exti;
         let status = i2s2_driver.ext().status();
-        // it's better to write data first to avoid to trigger udr flag
-        if !DacTxStream::is_enabled() && status.txe() {
-            let data;
-            match (*ext_frame_state, status.chside()) {
-                (LeftMsb, Channel::Left) => {
-                    let (l, r) = dac_c.dequeue().unwrap_or_default();
-                    *ext_frame = (l as u32, r as u32);
-                    data = (ext_frame.0 >> 16) as u16;
-                    *ext_frame_state = LeftLsb;
-                }
-                (LeftLsb, Channel::Left) => {
-                    data = (ext_frame.0 & 0xFFFF) as u16;
-                    *ext_frame_state = RightMsb;
-                }
-                (RightMsb, Channel::Right) => {
-                    data = (ext_frame.1 >> 16) as u16;
-                    *ext_frame_state = RightLsb;
-                }
-                (RightLsb, Channel::Right) => {
-                    data = (ext_frame.1 & 0xFFFF) as u16;
-                    *ext_frame_state = LeftMsb;
-                }
-                // in case of udr this resynchronize tracked and actual channel
-                _ => {
-                    *ext_frame_state = LeftMsb;
-                    data = 0; //garbage data to avoid additional underrun
-                }
-            }
-            i2s2_driver.ext().write_data_register(data);
+        // txe event is just used to start the dma stream
+        if status.txe() {
+            unsafe { dac_tx_stream.enable() };
+            i2s2_driver.ext().set_tx_interrupt(false);
         }
         if status.fre() {
             log::spawn(I2sError(I2sExtFre)).ok();
             i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         if status.udr() {
@@ -463,8 +439,9 @@ mod app {
             // Here we know ws pin is high because the interrupt was triggerd by it's rising edge
             ws_pin.clear_interrupt_pending_bit();
             ws_pin.disable_interrupt(exti);
-            unsafe { dac_tx_stream.enable() };
-            i2s2_driver.ext().set_tx_interrupt(false);
+            i2s2_driver.ext().set_tx_interrupt(true);
+            i2s2_driver.ext().set_error_interrupt(true);
+
             i2s2_driver.ext().write_data_register(0);
             i2s2_driver.ext().enable();
         }
