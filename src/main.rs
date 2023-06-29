@@ -78,6 +78,11 @@ mod app {
         DacTxStreamTransferError,
         DacTxStreamFifoError(u16, I2sErr),
         DacTxStreamDirectModeError,
+        AdcRxStreamTransferComplete(u16),
+        AdcRxStreamHalfTransfer(u16),
+        AdcRxStreamTransferError,
+        AdcRxStreamFifoError(u16, I2sErr),
+        AdcRxStreamDirectModeError,
     }
     use Log::*;
 
@@ -357,62 +362,54 @@ mod app {
             adc_p,
             dac_c
         ],
-        shared = [i2s2_driver, dac_tx_stream, exti]
+        shared = [i2s2_driver,adc_rx_stream, dac_tx_stream, exti]
     )]
     fn i2s2(cx: i2s2::Context) {
         let i2s2_driver = cx.shared.i2s2_driver;
+        let adc_rx_stream = cx.shared.adc_rx_stream;
         let dac_tx_stream = cx.shared.dac_tx_stream;
+        let exti = cx.shared.exti;
 
         // handling "main" part
         let main_frame_state = cx.local.main_frame_state;
         let main_frame = cx.local.main_frame;
         let adc_p = cx.local.adc_p;
         let status = i2s2_driver.main().status();
-        // It's better to read first to avoid triggering ovr flag
+        // rxne event is just used to start the dma stream
         if status.rxne() {
-            let data = i2s2_driver.main().read_data_register();
-            match (*main_frame_state, status.chside()) {
-                (LeftMsb, Channel::Left) => {
-                    main_frame.0 = (data as u32) << 16;
-                    *main_frame_state = LeftLsb;
-                }
-                (LeftLsb, Channel::Left) => {
-                    main_frame.0 |= data as u32;
-                    *main_frame_state = RightMsb;
-                }
-                (RightMsb, Channel::Right) => {
-                    main_frame.1 = (data as u32) << 16;
-                    *main_frame_state = RightLsb;
-                }
-                (RightLsb, Channel::Right) => {
-                    main_frame.1 |= data as u32;
-                    // defer sample processing to another task
-                    let (l, r) = *main_frame;
-                    adc_p.enqueue((l as i32, r as i32)).ok();
-                    rtic::pend(Interrupt::SPI5);
-                    *main_frame_state = LeftMsb;
-                }
-                // in case of ovr this resynchronize at start of new main_frame
-                _ => *main_frame_state = LeftMsb,
-            }
+            //i2s2_driver.main().read_data_register();
+            unsafe { adc_rx_stream.enable() };
+            i2s2_driver.main().set_rx_interrupt(false);
         }
         if status.ovr() {
             log::spawn(I2sError(I2sMainOvr)).ok();
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
+            // disable extension first to avoid triggering error when resetting clocks
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+
+            i2s2_driver.main().disable();
+            i2s2_driver.reset_clocks();
+            i2s2_driver.main().enable();
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
 
         // handling "ext" part
         let ext_frame_state = cx.local.ext_frame_state;
         let ext_frame = cx.local.ext_frame;
         let dac_c = cx.local.dac_c;
-        let exti = cx.shared.exti;
         let status = i2s2_driver.ext().status();
         // txe event is just used to start the dma stream
         if status.txe() {
-            unsafe { dac_tx_stream.enable() };
-            i2s2_driver.ext().set_tx_interrupt(false);
+            let nb_transfers = AdcRxStream::get_number_of_transfers();
+            if nb_transfers == 1 {
+                unsafe { dac_tx_stream.enable() };
+                i2s2_driver.ext().set_tx_interrupt(false);
+            } else {
+                i2s2_driver.ext().write_data_register(0);
+            }
         }
         if status.fre() {
             log::spawn(I2sError(I2sExtFre)).ok();
@@ -422,8 +419,9 @@ mod app {
         }
         if status.udr() {
             log::spawn(I2sError(I2sExtUdr)).ok();
-            i2s2_driver.ext().status();
-            i2s2_driver.ext().write_data_register(0);
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
     }
 
@@ -476,20 +474,21 @@ mod app {
     #[task(priority = 4, binds = DMA1_STREAM3, shared = [adc_rx_stream])]
     fn dma1_stream3(cx: dma1_stream3::Context) {
         let adc_rx_stream = cx.shared.adc_rx_stream;
+        let nb_transfers = AdcRxStream::get_number_of_transfers();
         if AdcRxStream::get_transfer_complete_flag() {
-            //log::spawn("adc_rx_stream transfert complete").ok();
+            //log::spawn(AdcRxStreamTransferComplete(nb_transfers)).ok();
         }
         if AdcRxStream::get_half_transfer_flag() {
-            //log::spawn("adc_rx_stream half transfert complete").ok();
+            //log::spawn(AdcRxStreamHalfTransfer(nb_transfers)).ok();
         }
         if AdcRxStream::get_transfer_error_flag() {
-            //log::spawn("adc_rx_stream transfert error").ok();
+            log::spawn(AdcRxStreamTransferError).ok();
         }
         if AdcRxStream::get_fifo_error_flag() {
-            //log::spawn("adc_rx_stream fifo error").ok();
+            log::spawn(AdcRxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
         }
         if AdcRxStream::get_direct_mode_error_flag() {
-            //log::spawn("adc_rx_stream direct mode error").ok();
+            log::spawn(AdcRxStreamDirectModeError).ok();
         }
         adc_rx_stream.clear_interrupts();
     }
