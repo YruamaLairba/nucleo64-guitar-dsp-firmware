@@ -110,22 +110,6 @@ mod app {
 
     #[init(local = [queue_1: Queue<(i32,i32), 2> = Queue::new(),queue_2: Queue<(i32,i32), 2> = Queue::new()])]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
-        let buf_iter = I2SBUF.chunks(4);
-        let nb_smpl = buf_iter.len();
-        for (i, e) in buf_iter.enumerate() {
-            let smpl = if i < nb_smpl / 2 {
-                0x2000_0000u32
-            } else {
-                0xAFFF_FFFFu32
-            };
-            let msb = (smpl >> 16) as u16;
-            let lsb = (smpl & 0x0000_FFFF) as u16;
-            e[0].store(lsb, Release);
-            e[2].store(lsb, Release);
-            e[1].store(msb, Release);
-            e[3].store(msb, Release);
-        }
-
         let queue_1 = cx.local.queue_1;
         let queue_2 = cx.local.queue_2;
         let channels = rtt_init! {
