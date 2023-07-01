@@ -280,7 +280,7 @@ mod app {
         adc_rx_stream.set_memory_increment(true);
         adc_rx_stream.set_circular_mode(true);
         adc_rx_stream.set_direction(DmaDirection::PeripheralToMemory);
-        adc_rx_stream.set_interrupts_enable(true, true, true, true);
+        adc_rx_stream.set_interrupts_enable(false, false, true, true);
         dac_tx_stream.set_channel(DmaChannel::Channel2);
         dac_tx_stream.set_peripheral_address(i2s2_driver.ext().data_register_address());
         dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
@@ -292,7 +292,7 @@ mod app {
         dac_tx_stream.set_memory_increment(true);
         dac_tx_stream.set_circular_mode(true);
         dac_tx_stream.set_direction(DmaDirection::MemoryToPeripheral);
-        dac_tx_stream.set_interrupts_enable(true, true, true, true);
+        dac_tx_stream.set_interrupts_enable(false, false, true, true);
 
         //unsafe { adc_rx_stream.enable() };
         //unsafe { dac_tx_stream.enable() };
@@ -383,6 +383,9 @@ mod app {
         }
         if status.ovr() {
             log::spawn(I2sError(I2sMainOvr)).ok();
+            // stops dma streams
+            adc_rx_stream.disable();
+            dac_tx_stream.disable();
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
@@ -413,12 +416,14 @@ mod app {
         }
         if status.fre() {
             log::spawn(I2sError(I2sExtFre)).ok();
+            dac_tx_stream.disable();
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         if status.udr() {
             log::spawn(I2sError(I2sExtUdr)).ok();
+            dac_tx_stream.disable();
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
@@ -445,10 +450,11 @@ mod app {
         }
     }
 
-    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream,i2s2_driver])]
+    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream,i2s2_driver,exti])]
     fn dma1_stream4(cx: dma1_stream4::Context) {
         let dac_tx_stream = cx.shared.dac_tx_stream;
         let i2s2_driver = cx.shared.i2s2_driver;
+        let exti = cx.shared.exti;
         let nb_transfers = DacTxStream::get_number_of_transfers();
         if DacTxStream::get_transfer_complete_flag() {
             //log::spawn(DacTxStreamTransferComplete(nb_transfers)).ok();
@@ -456,24 +462,35 @@ mod app {
         if DacTxStream::get_half_transfer_flag() {
             //log::spawn(DacTxStreamHalfTransfer(nb_transfers)).ok();
         }
+        // this flag can only set on a bus error but i don't know what it mean
         if DacTxStream::get_transfer_error_flag() {
             log::spawn(DacTxStreamTransferError).ok();
+            dac_tx_stream.disable();
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
+        // this error can only happen in underrun condition with current stream condition
         if DacTxStream::get_fifo_error_flag() {
-            let status = i2s2_driver.ext().status();
-            if status.udr() {
-                log::spawn(DacTxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
-            }
+            log::spawn(DacTxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
+            dac_tx_stream.disable();
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
+        // this error can't happen with this current stream configuration.
         if DacTxStream::get_direct_mode_error_flag() {
             log::spawn(DacTxStreamDirectModeError).ok();
         }
         dac_tx_stream.clear_interrupts();
     }
 
-    #[task(priority = 4, binds = DMA1_STREAM3, shared = [adc_rx_stream])]
+    #[task(priority = 4, binds = DMA1_STREAM3, shared = [adc_rx_stream,dac_tx_stream,i2s2_driver,exti])]
     fn dma1_stream3(cx: dma1_stream3::Context) {
         let adc_rx_stream = cx.shared.adc_rx_stream;
+        let dac_tx_stream = cx.shared.dac_tx_stream;
+        let i2s2_driver = cx.shared.i2s2_driver;
+        let exti = cx.shared.exti;
         let nb_transfers = AdcRxStream::get_number_of_transfers();
         if AdcRxStream::get_transfer_complete_flag() {
             //log::spawn(AdcRxStreamTransferComplete(nb_transfers)).ok();
@@ -481,12 +498,45 @@ mod app {
         if AdcRxStream::get_half_transfer_flag() {
             //log::spawn(AdcRxStreamHalfTransfer(nb_transfers)).ok();
         }
+
+        // this flag can only set on a bus error but i don't know what it mean
         if AdcRxStream::get_transfer_error_flag() {
             log::spawn(AdcRxStreamTransferError).ok();
+            // stops dma streams
+            adc_rx_stream.disable();
+            dac_tx_stream.disable();
+            // sequence to delete ovr flag
+            i2s2_driver.main().read_data_register();
+            i2s2_driver.main().status();
+            // disable extension first to avoid triggering error when resetting clocks
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+
+            i2s2_driver.main().disable();
+            i2s2_driver.reset_clocks();
+            i2s2_driver.main().enable();
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
+
+        // this error can only happen in overrun condition with current stream condition
         if AdcRxStream::get_fifo_error_flag() {
             log::spawn(AdcRxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
+            // stops dma streams
+            adc_rx_stream.disable();
+            dac_tx_stream.disable();
+            // sequence to delete ovr flag
+            i2s2_driver.main().read_data_register();
+            i2s2_driver.main().status();
+            // disable extension first to avoid triggering error when resetting clocks
+            i2s2_driver.ext().disable();
+            i2s2_driver.ext().set_tx_interrupt(true);
+
+            i2s2_driver.main().disable();
+            i2s2_driver.reset_clocks();
+            i2s2_driver.main().enable();
+            i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
+        // this error can't happen with this current stream configuration.
         if AdcRxStream::get_direct_mode_error_flag() {
             log::spawn(AdcRxStreamDirectModeError).ok();
         }
