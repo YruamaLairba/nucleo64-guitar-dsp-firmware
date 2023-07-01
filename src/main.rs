@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::default::Default;
 use core::panic::PanicInfo;
 use core::sync::atomic::AtomicU16;
 use rtt_target::rprintln;
@@ -23,18 +22,15 @@ mod app {
     use super::hal;
     use super::{I2SBUF, I2SBUFSIZE};
 
-    use hal::dma::config::DmaConfig;
     use hal::dma::traits::{Stream, StreamISR};
-    use hal::dma::{DmaChannel, DmaDirection, Stream3, Stream4, StreamX, StreamsTuple, Transfer};
+    use hal::dma::{DmaChannel, DmaDirection, Stream3, Stream4, StreamX, StreamsTuple};
     use hal::gpio::{Edge, NoPin, Output, Pin, Speed};
     use hal::i2s::stm32_i2s_v12x::driver::*;
     use hal::i2s::DualI2s;
-    use hal::pac::Interrupt;
     use hal::pac::{self, DMA1, EXTI, SPI2};
     use hal::prelude::*;
     use hal::spi::{self, Spi};
 
-    use heapless::spsc::*;
     use wm8731_another_hal::interface::SPIInterfaceU8;
     use wm8731_another_hal::prelude::*;
 
@@ -53,8 +49,6 @@ mod app {
         RightMsb,
         RightLsb,
     }
-
-    use FrameState::{LeftLsb, LeftMsb, RightLsb, RightMsb};
 
     impl Default for FrameState {
         fn default() -> Self {
@@ -105,16 +99,10 @@ mod app {
     #[local]
     struct Local {
         logs_chan: rtt_target::UpChannel,
-        adc_p: Producer<'static, (i32, i32), 2>,
-        process_c: Consumer<'static, (i32, i32), 2>,
-        process_p: Producer<'static, (i32, i32), 2>,
-        dac_c: Consumer<'static, (i32, i32), 2>,
     }
 
-    #[init(local = [queue_1: Queue<(i32,i32), 2> = Queue::new(),queue_2: Queue<(i32,i32), 2> = Queue::new()])]
+    #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
-        let queue_1 = cx.local.queue_1;
-        let queue_2 = cx.local.queue_2;
         let channels = rtt_init! {
             up: {
                 0: {
@@ -130,8 +118,6 @@ mod app {
         let logs_chan = channels.up.0;
         let panics_chan = channels.up.1;
         set_print_channel(panics_chan);
-        let (adc_p, process_c) = queue_1.split();
-        let (process_p, dac_c) = queue_2.split();
         let device = cx.device;
         let mut syscfg = device.SYSCFG.constrain();
         let mut exti = device.EXTI;
@@ -293,13 +279,7 @@ mod app {
                 dac_tx_stream,
                 exti,
             },
-            Local {
-                logs_chan,
-                adc_p,
-                process_c,
-                process_p,
-                dac_c,
-            },
+            Local { logs_chan },
             init::Monotonics(),
         )
     }
@@ -317,15 +297,11 @@ mod app {
     }
 
     // processing audio
-    #[task(local = [count: u32 = 0,process_c,process_p])]
-    fn process(cx: process::Context, data: &'static [AtomicU16; I2SBUFSIZE / 2]) {
+    #[task]
+    fn process(_cx: process::Context, data: &'static [AtomicU16; I2SBUFSIZE / 2]) {
         rprintln!("process");
-        let count = cx.local.count;
-        let process_c = cx.local.process_c;
-        let process_p = cx.local.process_p;
         let data_iter = data.chunks(4);
-        let nb_smpl = data_iter.len();
-        for (i, e) in data_iter.enumerate() {
+        for e in data_iter {
             let l_msb = e[0].load(Relaxed);
             let l_lsb = e[1].load(Relaxed);
             let r_msb = e[2].load(Relaxed);
@@ -350,14 +326,6 @@ mod app {
     #[task(
         priority = 4,
         binds = SPI2,
-        local = [
-            main_frame_state: FrameState = LeftMsb,
-            main_frame: (u32,u32) = (0,0),
-            ext_frame_state: FrameState = LeftMsb,
-            ext_frame: (u32,u32) = (0,0),
-            adc_p,
-            dac_c
-        ],
         shared = [i2s2_driver,adc_rx_stream, dac_tx_stream, exti]
     )]
     fn i2s2(cx: i2s2::Context) {
@@ -367,9 +335,6 @@ mod app {
         let exti = cx.shared.exti;
 
         // handling "main" part
-        let main_frame_state = cx.local.main_frame_state;
-        let main_frame = cx.local.main_frame;
-        let adc_p = cx.local.adc_p;
         let status = i2s2_driver.main().status();
         // rxne event is just used to start the dma stream
         if status.rxne() {
@@ -396,9 +361,6 @@ mod app {
         }
 
         // handling "ext" part
-        let ext_frame_state = cx.local.ext_frame_state;
-        let ext_frame = cx.local.ext_frame;
-        let dac_c = cx.local.dac_c;
         let status = i2s2_driver.ext().status();
         // txe event is just used to start the dma stream
         if status.txe() {
@@ -427,11 +389,10 @@ mod app {
     }
 
     // Look WS line for the "ext" part (re) synchronisation
-    #[task(priority = 4, binds = EXTI15_10, shared = [i2s2_driver,dac_tx_stream,exti])]
+    #[task(priority = 4, binds = EXTI15_10, shared = [i2s2_driver,exti])]
     fn exti15_10(cx: exti15_10::Context) {
         let i2s2_driver = cx.shared.i2s2_driver;
         let exti = cx.shared.exti;
-        let dac_tx_stream = cx.shared.dac_tx_stream;
         let ws_pin = i2s2_driver.ws_pin_mut();
         // check if that pin triggered the interrupt
         if ws_pin.check_interrupt() {
