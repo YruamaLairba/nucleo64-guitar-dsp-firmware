@@ -10,15 +10,18 @@ use arr_macro::arr;
 
 use stm32f4xx_hal as hal;
 
-static I2SBUF: [AtomicU16; 256] = arr![AtomicU16::new(0);256];
+const I2SBUFSIZE: usize = 256;
+static I2SBUF: [[AtomicU16; I2SBUFSIZE / 2]; 2] =
+    [arr![AtomicU16::new(0);128], arr![AtomicU16::new(0);128]];
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true,dispatchers = [EXTI0, EXTI1, EXTI2])]
 mod app {
     use core::fmt::Write;
+    use core::sync::atomic::AtomicU16;
     use core::sync::atomic::Ordering::*;
 
     use super::hal;
-    use super::I2SBUF;
+    use super::{I2SBUF, I2SBUFSIZE};
 
     use hal::dma::config::DmaConfig;
     use hal::dma::traits::{Stream, StreamISR};
@@ -256,7 +259,7 @@ mod app {
         adc_rx_stream.set_channel(DmaChannel::Channel0);
         adc_rx_stream.set_peripheral_address(i2s2_driver.main().data_register_address());
         adc_rx_stream.set_memory_address(&I2SBUF as *const _ as u32);
-        adc_rx_stream.set_number_of_transfers(I2SBUF.len() as u16);
+        adc_rx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
         unsafe {
             adc_rx_stream.set_memory_size(1);
             adc_rx_stream.set_peripheral_size(1);
@@ -264,11 +267,11 @@ mod app {
         adc_rx_stream.set_memory_increment(true);
         adc_rx_stream.set_circular_mode(true);
         adc_rx_stream.set_direction(DmaDirection::PeripheralToMemory);
-        adc_rx_stream.set_interrupts_enable(false, false, true, true);
+        adc_rx_stream.set_interrupts_enable(true, true, true, true);
         dac_tx_stream.set_channel(DmaChannel::Channel2);
         dac_tx_stream.set_peripheral_address(i2s2_driver.ext().data_register_address());
         dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
-        dac_tx_stream.set_number_of_transfers(I2SBUF.len() as u16);
+        dac_tx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
         unsafe {
             dac_tx_stream.set_memory_size(1);
             dac_tx_stream.set_peripheral_size(1);
@@ -314,24 +317,33 @@ mod app {
     }
 
     // processing audio
-    #[task(binds = SPI5, local = [count: u32 = 0,process_c,process_p])]
-    fn process(cx: process::Context) {
+    #[task(local = [count: u32 = 0,process_c,process_p])]
+    fn process(cx: process::Context, data: &'static [AtomicU16; I2SBUFSIZE / 2]) {
+        rprintln!("process");
         let count = cx.local.count;
         let process_c = cx.local.process_c;
         let process_p = cx.local.process_p;
-        while let Some(mut smpl) = process_c.dequeue() {
-            let period = 24000;
-            if *count > period / 2 {
-                smpl.0 >>= 1;
-            }
-            if *count > period / 4 && *count <= period * 3 / 4 {
-                smpl.1 >>= 1;
-            }
-            *count += 1;
-            if *count >= period {
-                *count = 0;
-            }
-            process_p.enqueue(smpl).ok();
+        let data_iter = data.chunks(4);
+        let nb_smpl = data_iter.len();
+        for (i, e) in data_iter.enumerate() {
+            let l_msb = e[0].load(Relaxed);
+            let l_lsb = e[1].load(Relaxed);
+            let r_msb = e[2].load(Relaxed);
+            let r_lsb = e[3].load(Relaxed);
+            let mut smpl = (
+                ((l_msb as u32) << 16) + (l_lsb as u32),
+                ((r_msb as u32) << 16) + (r_lsb as u32),
+            );
+            smpl.1 = 0;
+
+            let l_msb = (smpl.0 >> 16) as u16;
+            let l_lsb = (smpl.0 & 0x0000_FFFF) as u16;
+            let r_msb = (smpl.1 >> 16) as u16;
+            let r_lsb = (smpl.1 & 0x0000_FFFF) as u16;
+            e[0].store(l_msb, Release);
+            e[1].store(l_lsb, Release);
+            e[2].store(r_msb, Release);
+            e[3].store(r_lsb, Release);
         }
     }
 
@@ -478,9 +490,11 @@ mod app {
         let nb_transfers = AdcRxStream::get_number_of_transfers();
         if AdcRxStream::get_transfer_complete_flag() {
             //log::spawn(AdcRxStreamTransferComplete(nb_transfers)).ok();
+            process::spawn(&I2SBUF[1]).ok();
         }
         if AdcRxStream::get_half_transfer_flag() {
             //log::spawn(AdcRxStreamHalfTransfer(nb_transfers)).ok();
+            process::spawn(&I2SBUF[0]).ok();
         }
 
         // this flag can only set on a bus error but i don't know what it mean
