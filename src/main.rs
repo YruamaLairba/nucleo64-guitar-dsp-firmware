@@ -23,7 +23,10 @@ mod app {
     use super::{I2SBUF, I2SBUFSIZE};
 
     use hal::dma::traits::{Stream, StreamISR};
-    use hal::dma::{DmaChannel, DmaDirection, Stream3, Stream4, StreamX, StreamsTuple};
+    use hal::dma::{
+        DmaChannel, DmaCommonInterrupts, DmaDataSize::*, DmaDirection, Stream3, Stream4,
+        StreamsTuple,
+    };
     use hal::gpio::{Edge, NoPin, Output, Pin, Speed};
     use hal::i2s::stm32_i2s_v12x::driver::*;
     use hal::i2s::DualI2s;
@@ -38,8 +41,6 @@ mod app {
 
     type Wm8731Codec = Wm8731<SPIInterfaceU8<Spi<pac::SPI1>, Pin<'B', 2, Output>>>;
     type DualI2s2Driver = DualI2sDriver<DualI2s<SPI2>, Master, Receive, Transmit, Philips>;
-    type AdcRxStream = StreamX<DMA1, 3>;
-    type DacTxStream = StreamX<DMA1, 4>;
 
     // Part of the frame we currently transmit or receive
     #[derive(Copy, Clone)]
@@ -247,25 +248,35 @@ mod app {
         adc_rx_stream.set_memory_address(&I2SBUF as *const _ as u32);
         adc_rx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
         unsafe {
-            adc_rx_stream.set_memory_size(1);
-            adc_rx_stream.set_peripheral_size(1);
+            adc_rx_stream.set_memory_size(HalfWord);
+            adc_rx_stream.set_peripheral_size(HalfWord);
         };
         adc_rx_stream.set_memory_increment(true);
         adc_rx_stream.set_circular_mode(true);
         adc_rx_stream.set_direction(DmaDirection::PeripheralToMemory);
-        adc_rx_stream.set_interrupts_enable(true, true, true, true);
+        adc_rx_stream.listen(DmaCommonInterrupts {
+            transfer_complete: true,
+            half_transfer: true,
+            transfer_error: true,
+            direct_mode_error: true,
+        });
         dac_tx_stream.set_channel(DmaChannel::Channel2);
         dac_tx_stream.set_peripheral_address(i2s2_driver.ext().data_register_address());
         dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
         dac_tx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
         unsafe {
-            dac_tx_stream.set_memory_size(1);
-            dac_tx_stream.set_peripheral_size(1);
+            dac_tx_stream.set_memory_size(HalfWord);
+            dac_tx_stream.set_peripheral_size(HalfWord);
         };
         dac_tx_stream.set_memory_increment(true);
         dac_tx_stream.set_circular_mode(true);
         dac_tx_stream.set_direction(DmaDirection::MemoryToPeripheral);
-        dac_tx_stream.set_interrupts_enable(false, false, true, true);
+        dac_tx_stream.listen(DmaCommonInterrupts {
+            transfer_complete: true,
+            half_transfer: true,
+            transfer_error: true,
+            direct_mode_error: true,
+        });
 
         //unsafe { adc_rx_stream.enable() };
         //unsafe { dac_tx_stream.enable() };
@@ -345,8 +356,11 @@ mod app {
         if status.ovr() {
             log::spawn(I2sError(I2sMainOvr)).ok();
             // stops dma streams
-            adc_rx_stream.disable();
-            dac_tx_stream.disable();
+            unsafe {
+                adc_rx_stream.disable();
+                dac_tx_stream.disable();
+            }
+            while adc_rx_stream.is_enabled() || dac_tx_stream.is_enabled() {}
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
@@ -364,7 +378,7 @@ mod app {
         let status = i2s2_driver.ext().status();
         // txe event is just used to start the dma stream
         if status.txe() {
-            let nb_transfers = AdcRxStream::get_number_of_transfers();
+            let nb_transfers = adc_rx_stream.number_of_transfers();
             if nb_transfers == 1 {
                 unsafe { dac_tx_stream.enable() };
                 i2s2_driver.ext().set_tx_interrupt(false);
@@ -374,14 +388,20 @@ mod app {
         }
         if status.fre() {
             log::spawn(I2sError(I2sExtFre)).ok();
-            dac_tx_stream.disable();
+            unsafe {
+                dac_tx_stream.disable();
+            }
+            while dac_tx_stream.is_enabled() {}
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         if status.udr() {
             log::spawn(I2sError(I2sExtUdr)).ok();
-            dac_tx_stream.disable();
+            unsafe {
+                dac_tx_stream.disable();
+            }
+            while dac_tx_stream.is_enabled() {}
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
@@ -412,34 +432,41 @@ mod app {
         let dac_tx_stream = cx.shared.dac_tx_stream;
         let i2s2_driver = cx.shared.i2s2_driver;
         let exti = cx.shared.exti;
-        let nb_transfers = DacTxStream::get_number_of_transfers();
-        if DacTxStream::get_transfer_complete_flag() {
+        let nb_transfers = dac_tx_stream.number_of_transfers();
+        let flags = dac_tx_stream.all_flags();
+        dac_tx_stream.clear_flags(flags);
+        if flags.transfer_complete {
             //log::spawn(DacTxStreamTransferComplete(nb_transfers)).ok();
         }
-        if DacTxStream::get_half_transfer_flag() {
+        if flags.half_transfer {
             //log::spawn(DacTxStreamHalfTransfer(nb_transfers)).ok();
         }
         // this flag can only set on a bus error but i don't know what it mean
-        if DacTxStream::get_transfer_error_flag() {
+        if flags.transfer_error {
             log::spawn(DacTxStreamTransferError).ok();
-            dac_tx_stream.disable();
+            unsafe {
+                dac_tx_stream.disable();
+            }
+            while dac_tx_stream.is_enabled() {}
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         // this error can only happen in underrun condition with current stream condition
-        if DacTxStream::get_fifo_error_flag() {
+        if flags.fifo_error {
             log::spawn(DacTxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
-            dac_tx_stream.disable();
+            unsafe {
+                dac_tx_stream.disable();
+            }
+            while dac_tx_stream.is_enabled() {}
             i2s2_driver.ext().disable();
             i2s2_driver.ext().set_tx_interrupt(true);
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         // this error can't happen with this current stream configuration.
-        if DacTxStream::get_direct_mode_error_flag() {
+        if flags.direct_mode_error {
             log::spawn(DacTxStreamDirectModeError).ok();
         }
-        dac_tx_stream.clear_interrupts();
     }
 
     #[task(priority = 4, binds = DMA1_STREAM3, shared = [adc_rx_stream,dac_tx_stream,i2s2_driver,exti])]
@@ -448,22 +475,27 @@ mod app {
         let dac_tx_stream = cx.shared.dac_tx_stream;
         let i2s2_driver = cx.shared.i2s2_driver;
         let exti = cx.shared.exti;
-        let nb_transfers = AdcRxStream::get_number_of_transfers();
-        if AdcRxStream::get_transfer_complete_flag() {
+        let nb_transfers = adc_rx_stream.number_of_transfers();
+        let flags = adc_rx_stream.all_flags();
+        dac_tx_stream.clear_flags(flags);
+        if flags.transfer_complete {
             //log::spawn(AdcRxStreamTransferComplete(nb_transfers)).ok();
             process::spawn(&I2SBUF[1]).ok();
         }
-        if AdcRxStream::get_half_transfer_flag() {
+        if flags.half_transfer {
             //log::spawn(AdcRxStreamHalfTransfer(nb_transfers)).ok();
             process::spawn(&I2SBUF[0]).ok();
         }
 
         // this flag can only set on a bus error but i don't know what it mean
-        if AdcRxStream::get_transfer_error_flag() {
+        if flags.transfer_error {
             log::spawn(AdcRxStreamTransferError).ok();
             // stops dma streams
-            adc_rx_stream.disable();
-            dac_tx_stream.disable();
+            unsafe {
+                adc_rx_stream.disable();
+                dac_tx_stream.disable();
+            }
+            while adc_rx_stream.is_enabled() || dac_tx_stream.is_enabled() {}
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
@@ -478,11 +510,14 @@ mod app {
         }
 
         // this error can only happen in overrun condition with current stream condition
-        if AdcRxStream::get_fifo_error_flag() {
+        if flags.fifo_error {
             log::spawn(AdcRxStreamFifoError(nb_transfers, I2sExtUdr)).ok();
             // stops dma streams
-            adc_rx_stream.disable();
-            dac_tx_stream.disable();
+            unsafe {
+                adc_rx_stream.disable();
+                dac_tx_stream.disable();
+            }
+            while adc_rx_stream.is_enabled() || dac_tx_stream.is_enabled() {}
             // sequence to delete ovr flag
             i2s2_driver.main().read_data_register();
             i2s2_driver.main().status();
@@ -496,10 +531,9 @@ mod app {
             i2s2_driver.ws_pin_mut().enable_interrupt(exti);
         }
         // this error can't happen with this current stream configuration.
-        if AdcRxStream::get_direct_mode_error_flag() {
+        if flags.direct_mode_error {
             log::spawn(AdcRxStreamDirectModeError).ok();
         }
-        adc_rx_stream.clear_interrupts();
     }
 }
 
