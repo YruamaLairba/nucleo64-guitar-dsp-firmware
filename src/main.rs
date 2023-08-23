@@ -272,8 +272,8 @@ mod app {
         dac_tx_stream.set_circular_mode(true);
         dac_tx_stream.set_direction(DmaDirection::MemoryToPeripheral);
         dac_tx_stream.listen(DmaCommonInterrupts {
-            transfer_complete: true,
-            half_transfer: true,
+            transfer_complete: false,
+            half_transfer: false,
             transfer_error: true,
             direct_mode_error: true,
         });
@@ -434,7 +434,14 @@ mod app {
         let exti = cx.shared.exti;
         let nb_transfers = dac_tx_stream.number_of_transfers();
         let flags = dac_tx_stream.all_flags();
-        dac_tx_stream.clear_flags(flags);
+        let clear_flags = hal::dma::DmaFlags {
+            transfer_complete: true,
+            half_transfer: true,
+            transfer_error: true,
+            direct_mode_error: true,
+            fifo_error: true,
+        };
+        dac_tx_stream.clear_flags(clear_flags);
         if flags.transfer_complete {
             //log::spawn(DacTxStreamTransferComplete(nb_transfers)).ok();
         }
@@ -477,7 +484,25 @@ mod app {
         let exti = cx.shared.exti;
         let nb_transfers = adc_rx_stream.number_of_transfers();
         let flags = adc_rx_stream.all_flags();
-        dac_tx_stream.clear_flags(flags);
+        let clear_flags = hal::dma::DmaFlags {
+            transfer_complete: true,
+            half_transfer: true,
+            transfer_error: true,
+            direct_mode_error: true,
+            fifo_error: true,
+        };
+        adc_rx_stream.clear_flags(clear_flags);
+
+        let flags2 = adc_rx_stream.all_flags();
+        if flags2.transfer_complete
+            || flags2.half_transfer
+            || flags2.transfer_error
+            || flags2.direct_mode_error
+            || flags2.fifo_error
+        {
+            rprintln!("oh crap {:?}", flags2);
+        }
+
         if flags.transfer_complete {
             //log::spawn(AdcRxStreamTransferComplete(nb_transfers)).ok();
             process::spawn(&I2SBUF[1]).ok();
