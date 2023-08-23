@@ -310,7 +310,6 @@ mod app {
     // processing audio
     #[task]
     fn process(_cx: process::Context, data: &'static [AtomicU16; I2SBUFSIZE / 2]) {
-        rprintln!("process");
         let data_iter = data.chunks(4);
         for e in data_iter {
             let l_msb = e[0].load(Relaxed);
@@ -427,7 +426,11 @@ mod app {
         }
     }
 
-    #[task(priority = 4, binds = DMA1_STREAM4, shared = [dac_tx_stream,i2s2_driver,exti])]
+    #[task(
+        priority = 4,
+        binds = DMA1_STREAM4,
+        shared = [dac_tx_stream,i2s2_driver,exti]
+    )]
     fn dma1_stream4(cx: dma1_stream4::Context) {
         let dac_tx_stream = cx.shared.dac_tx_stream;
         let i2s2_driver = cx.shared.i2s2_driver;
