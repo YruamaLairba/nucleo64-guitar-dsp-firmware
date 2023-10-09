@@ -141,7 +141,13 @@ impl<T: ConstDefault, const N: usize> ConstDefault for [T; N] {
 }
 
 /// Marker trait to indicate type that can be uses as dma buffer
-pub trait DmaBuffer: Sealed {}
+pub trait DmaBuffer: Sealed {
+    /// Number of dma transfers required to run throught all the buffer
+    fn nb_transfer(&self) -> usize {
+        //core::mem::size_of_val(self);
+        todo!()
+    }
+}
 
 impl<T: ToDmaCellInner> Sealed for [DmaCell<T>] {}
 impl<T: ToDmaCellInner> DmaBuffer for [DmaCell<T>] {}

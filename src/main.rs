@@ -2,25 +2,19 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use core::sync::atomic::AtomicU16;
 use rtt_target::rprintln;
 
-use arr_macro::arr;
-
+use nucleo64_guitar_dsp_firmware::dma::*;
 use stm32f4xx_hal as hal;
 
-const I2SBUFSIZE: usize = 256;
-static I2SBUF: [[AtomicU16; I2SBUFSIZE / 2]; 2] =
-    [arr![AtomicU16::new(0);128], arr![AtomicU16::new(0);128]];
+static I2SBUF: [[[DmaCell<u16>; 4]; 32]; 2] = new_dma_array();
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true,dispatchers = [EXTI0, EXTI1, EXTI2])]
 mod app {
     use core::fmt::Write;
-    use core::sync::atomic::AtomicU16;
-    use core::sync::atomic::Ordering::*;
 
     use super::hal;
-    use super::{I2SBUF, I2SBUFSIZE};
+    use super::I2SBUF;
 
     use hal::dma::traits::{Stream, StreamISR};
     use hal::dma::{
@@ -37,6 +31,7 @@ mod app {
     use wm8731_another_hal::interface::SPIInterfaceU8;
     use wm8731_another_hal::prelude::*;
 
+    use nucleo64_guitar_dsp_firmware::dma::*;
     use rtt_target::{rprintln, rtt_init, set_print_channel};
 
     type Wm8731Codec = Wm8731<SPIInterfaceU8<Spi<pac::SPI1>, Pin<'B', 2, Output>>>;
@@ -246,7 +241,7 @@ mod app {
         adc_rx_stream.set_channel(DmaChannel::Channel0);
         adc_rx_stream.set_peripheral_address(i2s2_driver.main().data_register_address());
         adc_rx_stream.set_memory_address(&I2SBUF as *const _ as u32);
-        adc_rx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
+        adc_rx_stream.set_number_of_transfers(I2SBUF.nb_transfer() as u16);
         unsafe {
             adc_rx_stream.set_memory_size(HalfWord);
             adc_rx_stream.set_peripheral_size(HalfWord);
@@ -263,7 +258,7 @@ mod app {
         dac_tx_stream.set_channel(DmaChannel::Channel2);
         dac_tx_stream.set_peripheral_address(i2s2_driver.ext().data_register_address());
         dac_tx_stream.set_memory_address(&I2SBUF as *const _ as u32);
-        dac_tx_stream.set_number_of_transfers(I2SBUFSIZE as u16);
+        dac_tx_stream.set_number_of_transfers(I2SBUF.nb_transfer() as u16);
         unsafe {
             dac_tx_stream.set_memory_size(HalfWord);
             dac_tx_stream.set_peripheral_size(HalfWord);
@@ -309,13 +304,12 @@ mod app {
 
     // processing audio
     #[task]
-    fn process(_cx: process::Context, data: &'static [AtomicU16; I2SBUFSIZE / 2]) {
-        let data_iter = data.chunks(4);
-        for e in data_iter {
-            let l_msb = e[0].load(Relaxed);
-            let l_lsb = e[1].load(Relaxed);
-            let r_msb = e[2].load(Relaxed);
-            let r_lsb = e[3].load(Relaxed);
+    fn process(_cx: process::Context, data: &'static [[DmaCell<u16>; 4]; 32]) {
+        for e in data {
+            let l_msb = e[0].read();
+            let l_lsb = e[1].read();
+            let r_msb = e[2].read();
+            let r_lsb = e[3].read();
             let mut smpl = (
                 ((l_msb as u32) << 16) + (l_lsb as u32),
                 ((r_msb as u32) << 16) + (r_lsb as u32),
@@ -326,10 +320,10 @@ mod app {
             let l_lsb = (smpl.0 & 0x0000_FFFF) as u16;
             let r_msb = (smpl.1 >> 16) as u16;
             let r_lsb = (smpl.1 & 0x0000_FFFF) as u16;
-            e[0].store(l_msb, Release);
-            e[1].store(l_lsb, Release);
-            e[2].store(r_msb, Release);
-            e[3].store(r_lsb, Release);
+            e[0].write(l_msb);
+            e[1].write(l_lsb);
+            e[2].write(r_msb);
+            e[3].write(r_lsb);
         }
     }
 
