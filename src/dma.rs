@@ -2,6 +2,8 @@ use core::marker::*;
 use core::sync::atomic::*;
 use Ordering::*;
 
+use stm32f4xx_hal::dma::*;
+
 mod private {
     use super::*;
     pub trait Sealed {}
@@ -23,6 +25,13 @@ use private::*;
 pub trait ConstDefault {
     const DEFAULT: Self;
 }
+
+impl Sealed for u8 {}
+impl Sealed for u16 {}
+impl Sealed for u32 {}
+impl Sealed for i8 {}
+impl Sealed for i16 {}
+impl Sealed for i32 {}
 
 #[allow(clippy::declare_interior_mutable_const)]
 impl ConstDefault for AtomicU8 {
@@ -140,25 +149,100 @@ impl<T: ConstDefault, const N: usize> ConstDefault for [T; N] {
     const DEFAULT: Self = [T::DEFAULT; N];
 }
 
+/// Transfer size of one value.
+pub trait DataSize: Sealed {
+    const DMA_DATA_SIZE: DmaDataSize;
+    const USIZE: usize;
+}
+
+impl DataSize for u8 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Byte;
+    const USIZE: usize = 1;
+}
+impl DataSize for u16 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::HalfWord;
+    const USIZE: usize = 2;
+}
+impl DataSize for u32 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Word;
+    const USIZE: usize = 4;
+}
+impl DataSize for i8 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Byte;
+    const USIZE: usize = 1;
+}
+impl DataSize for i16 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::HalfWord;
+    const USIZE: usize = 2;
+}
+impl DataSize for i32 {
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Word;
+    const USIZE: usize = 4;
+}
+
+pub struct Byte;
+pub struct Halfword;
+pub struct Word;
+
+trait DataSizeMarker: Sealed {
+    /// To set up Stream
+    const DMA_DATA_SIZE: DmaDataSize;
+    /// For general calculation
+    const USIZE: usize;
+}
+
+impl Sealed for Byte {}
+impl Sealed for Halfword {}
+impl Sealed for Word {}
+
+impl DataSizeMarker for Byte {
+    /// To set up Stream
+    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Byte;
+    /// For general calculation
+    const USIZE: usize = 1;
+}
+
+/// Data size of one transfer
+trait TransferSize {
+    /// to set d
+    type Size;
+    const SIZE: usize;
+}
+
 /// Marker trait to indicate type that can be uses as dma buffer
-pub trait DmaBuffer: Sealed {
+pub trait DmaBuffer: Sealed + DataSize {
     /// Number of dma transfers required to run throught all the buffer
     fn nb_transfer(&self) -> usize {
-        //core::mem::size_of_val(self);
-        todo!()
+        core::mem::size_of_val(self) / Self::USIZE
     }
 }
 
-impl<T: ToDmaCellInner> Sealed for [DmaCell<T>] {}
-impl<T: ToDmaCellInner> DmaBuffer for [DmaCell<T>] {}
+impl<T: ToDmaCellInner + DataSize> Sealed for [DmaCell<T>] {}
+impl<T: ToDmaCellInner + DataSize> DataSize for [DmaCell<T>] {
+    const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
+    const USIZE: usize = T::USIZE;
+}
+impl<T: ToDmaCellInner + DataSize> DmaBuffer for [DmaCell<T>] {}
 
 impl<T: DmaBuffer> Sealed for [T] {}
+impl<T: DmaBuffer> DataSize for [T] {
+    const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
+    const USIZE: usize = T::USIZE;
+}
 impl<T: DmaBuffer> DmaBuffer for [T] {}
 
 impl<T: ToDmaCellInner, const N: usize> Sealed for [DmaCell<T>; N] {}
-impl<T: ToDmaCellInner, const N: usize> DmaBuffer for [DmaCell<T>; N] {}
+impl<T: ToDmaCellInner + DataSize, const N: usize> DataSize for [DmaCell<T>; N] {
+    const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
+    const USIZE: usize = T::USIZE;
+}
+impl<T: ToDmaCellInner + DataSize, const N: usize> DmaBuffer for [DmaCell<T>; N] {}
 
 impl<T: DmaBuffer, const N: usize> Sealed for [T; N] {}
+impl<T: DmaBuffer, const N: usize> DataSize for [T; N] {
+    const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
+    const USIZE: usize = T::USIZE;
+}
 impl<T: DmaBuffer, const N: usize> DmaBuffer for [T; N] {}
 
 /// Function helping to instanciate a array suitable for dma usage.
