@@ -180,35 +180,6 @@ impl DataSize for i32 {
     const USIZE: usize = 4;
 }
 
-pub struct Byte;
-pub struct Halfword;
-pub struct Word;
-
-trait DataSizeMarker: Sealed {
-    /// To set up Stream
-    const DMA_DATA_SIZE: DmaDataSize;
-    /// For general calculation
-    const USIZE: usize;
-}
-
-impl Sealed for Byte {}
-impl Sealed for Halfword {}
-impl Sealed for Word {}
-
-impl DataSizeMarker for Byte {
-    /// To set up Stream
-    const DMA_DATA_SIZE: DmaDataSize = DmaDataSize::Byte;
-    /// For general calculation
-    const USIZE: usize = 1;
-}
-
-/// Data size of one transfer
-trait TransferSize {
-    /// to set d
-    type Size;
-    const SIZE: usize;
-}
-
 /// Marker trait to indicate type that can be uses as dma buffer
 pub trait DmaBuffer: Sealed + DataSize {
     /// Number of dma transfers required to run throught all the buffer
