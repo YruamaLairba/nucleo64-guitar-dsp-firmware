@@ -188,12 +188,12 @@ pub trait DmaBuffer: Sealed + DataSize {
     }
 }
 
-impl<T: ToDmaCellInner + DataSize> Sealed for [DmaCell<T>] {}
-impl<T: ToDmaCellInner + DataSize> DataSize for [DmaCell<T>] {
+impl<T: ToDmaCellInner + DataSize> Sealed for DmaCell<T> {}
+impl<T: ToDmaCellInner + DataSize> DataSize for DmaCell<T> {
     const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
     const USIZE: usize = T::USIZE;
 }
-impl<T: ToDmaCellInner + DataSize> DmaBuffer for [DmaCell<T>] {}
+impl<T: ToDmaCellInner + DataSize> DmaBuffer for DmaCell<T> {}
 
 impl<T: DmaBuffer> Sealed for [T] {}
 impl<T: DmaBuffer> DataSize for [T] {
@@ -201,13 +201,6 @@ impl<T: DmaBuffer> DataSize for [T] {
     const USIZE: usize = T::USIZE;
 }
 impl<T: DmaBuffer> DmaBuffer for [T] {}
-
-impl<T: ToDmaCellInner, const N: usize> Sealed for [DmaCell<T>; N] {}
-impl<T: ToDmaCellInner + DataSize, const N: usize> DataSize for [DmaCell<T>; N] {
-    const DMA_DATA_SIZE: DmaDataSize = T::DMA_DATA_SIZE;
-    const USIZE: usize = T::USIZE;
-}
-impl<T: ToDmaCellInner + DataSize, const N: usize> DmaBuffer for [DmaCell<T>; N] {}
 
 impl<T: DmaBuffer, const N: usize> Sealed for [T; N] {}
 impl<T: DmaBuffer, const N: usize> DataSize for [T; N] {
