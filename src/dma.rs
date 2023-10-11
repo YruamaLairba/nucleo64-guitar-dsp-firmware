@@ -209,10 +209,7 @@ impl<T: DmaBuffer, const N: usize> DataSize for [T; N] {
 }
 impl<T: DmaBuffer, const N: usize> DmaBuffer for [T; N] {}
 
-/// Function helping to instanciate a array suitable for dma usage.
-pub const fn new_dma_array<T: ConstDefault, const N: usize>() -> [T; N]
-where
-    [T; N]: DmaBuffer,
-{
-    [T::DEFAULT; N]
+/// Function helping to instanciate a static buffer suitable for dma usage.
+pub const fn new_dma_buffer<T: ConstDefault + DmaBuffer>() -> T {
+    T::DEFAULT
 }

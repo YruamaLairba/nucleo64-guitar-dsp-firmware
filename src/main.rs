@@ -7,7 +7,7 @@ use rtt_target::rprintln;
 use nucleo64_guitar_dsp_firmware::dma::*;
 use stm32f4xx_hal as hal;
 
-static I2SBUF: [[[DmaCell<u16>; 4]; 32]; 2] = new_dma_array();
+static I2SBUF: [[[DmaCell<u16>; 4]; 32]; 2] = new_dma_buffer();
 
 #[rtic::app(device = stm32f4xx_hal::pac, peripherals = true,dispatchers = [EXTI0, EXTI1, EXTI2])]
 mod app {
