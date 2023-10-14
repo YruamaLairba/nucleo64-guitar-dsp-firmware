@@ -32,6 +32,7 @@ mod app {
     use wm8731_another_hal::prelude::*;
 
     use nucleo64_guitar_dsp_firmware::dma::*;
+    use nucleo64_guitar_dsp_firmware::*;
     use rtt_target::{rprintln, rtt_init, set_print_channel};
 
     type Wm8731Codec = Wm8731<SPIInterfaceU8<Spi<pac::SPI1>, Pin<'B', 2, Output>>>;
@@ -305,25 +306,10 @@ mod app {
     // processing audio
     #[task]
     fn process(_cx: process::Context, data: &'static [[DmaCell<u16>; 4]; 32]) {
-        for e in data {
-            let l_msb = e[0].read();
-            let l_lsb = e[1].read();
-            let r_msb = e[2].read();
-            let r_lsb = e[3].read();
-            let mut smpl = (
-                ((l_msb as u32) << 16) + (l_lsb as u32),
-                ((r_msb as u32) << 16) + (r_lsb as u32),
-            );
-            smpl.1 = 0;
-
-            let l_msb = (smpl.0 >> 16) as u16;
-            let l_lsb = (smpl.0 & 0x0000_FFFF) as u16;
-            let r_msb = (smpl.1 >> 16) as u16;
-            let r_lsb = (smpl.1 & 0x0000_FFFF) as u16;
-            e[0].write(l_msb);
-            e[1].write(l_lsb);
-            e[2].write(r_msb);
-            e[3].write(r_lsb);
+        for cells in data {
+            let mut smpl = AudioSample::read_from_i2s_dma_cells(cells);
+            smpl.set_left(0.0);
+            smpl.write_to_i2s_dma_cells(cells);
         }
     }
 
