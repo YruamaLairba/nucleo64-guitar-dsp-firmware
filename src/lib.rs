@@ -57,8 +57,8 @@ impl AudioSample {
         let l = self.0[0];
         let r = self.0[1];
         // Note, big float are saturated by the language to fit in int
-        let l = (l * ((i32::MAX as f32) + 1.0)) as u32;
-        let r = (r * ((i32::MAX as f32) + 1.0)) as u32;
+        let l = (l * ((i32::MAX as f32) + 1.0)) as i32;
+        let r = (r * ((i32::MAX as f32) + 1.0)) as i32;
         let l_msb = (l >> 16) as u16;
         let l_lsb = (l & 0x0000_FFFF) as u16;
         let r_msb = (r >> 16) as u16;
