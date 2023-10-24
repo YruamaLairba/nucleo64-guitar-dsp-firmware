@@ -1,6 +1,10 @@
 # Nucleo64 Guitar DSP - firmware
 The aim of this project is to implement guitar effects using a nucleo64-f411
-board as DSP
+board as DSP and using the Rust language. Project progress slowly, and code,
+git history, dependencies management are a bit messy because the project
+require HAL features that aren't implemented. I generally implement here, those
+feature in dirty way first, then I try to cleanly implement them in their
+dedicated crate, to finally use the new or updated crate.
 
 ## License
 
