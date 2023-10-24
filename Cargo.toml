@@ -21,7 +21,7 @@ arr_macro ="0.2.1"
 # features = ["stm32f411", "rt"]
 
 [dependencies.stm32f4xx-hal]
-path = "../stm32f4xx-hal"
+git = "https://github.com/YruamaLairba/stm32f4xx-hal"
 features = ["i2s", "stm32f411"] # replace the model of your microcontroller here
 
 # Uncomment for the panic example.
